@@ -1,16 +1,11 @@
-import {
-  Todo,
-  TodoPriority,
-  TodoState,
-  addTodo,
-  deleteTodo,
-  listTodos,
-  transitionTodo,
-  updateTodo,
-} from "./db";
+import { extname, join } from "path";
+
 import { nip19 } from "nostr-tools";
 import { verifyEvent } from "nostr-tools/pure";
-import { extname, join } from "path";
+
+import { addTodo, deleteTodo, listTodos, transitionTodo, updateTodo } from "./db";
+
+import type { Todo, TodoPriority, TodoState } from "./db";
 
 const PORT = Number(Bun.env.PORT ?? 3000);
 const SESSION_COOKIE = "nostr_session";
@@ -257,6 +252,7 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       cursor: pointer;
       border-radius: 8px;
       font-size: 0.9rem;
+      color: #111;
     }
     .avatar-menu button:hover {
       background: #f3f4f6;
@@ -586,6 +582,7 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
           <img data-avatar-img alt="Profile photo" loading="lazy" ${session ? "" : "hidden"} />
         </button>
         <div class="avatar-menu" data-avatar-menu hidden>
+          <button type="button" data-export-secret ${session?.method === "ephemeral" ? "" : "hidden"}>Export Secret</button>
           <button type="button" data-logout>Log out</button>
         </div>
       </div>
@@ -963,6 +960,29 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       refreshUI();
     }
 
+    const exportSecretBtn = document.querySelector("[data-export-secret]");
+    exportSecretBtn?.addEventListener("click", async () => {
+      closeAvatarMenu();
+      if (state.session?.method !== "ephemeral") {
+        alert("Export is only available for ephemeral accounts.");
+        return;
+      }
+      const stored = localStorage.getItem("nostr_ephemeral_secret");
+      if (!stored) {
+        alert("No secret key found.");
+        return;
+      }
+      try {
+        const { pure } = await loadNostrLibs();
+        const nsec = pure.nip19.nsecEncode(stored);
+        await navigator.clipboard.writeText(nsec);
+        alert("Secret key copied to clipboard!\n\nKeep this safe - anyone with this key can access your account.");
+      } catch (err) {
+        console.error(err);
+        alert("Failed to export secret key.");
+      }
+    });
+
     logoutBtn?.addEventListener("click", async () => {
       closeAvatarMenu();
       await fetch("/auth/logout", { method: "POST" });
@@ -1019,7 +1039,7 @@ async function handleLogin(req: Request) {
   return jsonResponse(session, 200, serializeSessionCookie(token));
 }
 
-async function handleLogout(req: Request) {
+function handleLogout(req: Request) {
   const cookies = parseCookies(req.headers.get("cookie"));
   const token = cookies[SESSION_COOKIE];
   if (token) {

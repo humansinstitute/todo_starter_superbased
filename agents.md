@@ -1,5 +1,7 @@
 # Agents
 
+- My preference is for you to answer quickly. Do the research you need but dont get carried away doing long tasks
+- If you have multiple steps aska. question to ensure you keep on track. 
 - Install deps with `bun install`, then run `bun dev --hot` for hot reloads while editing. Use `bun start` when you want the production-like server.
 - Primary files: `src/server.ts` (Bun server, HTML rendering, inline client script) and `src/db.ts` (SQLite helpers). Static assets live in `public/`. The SQLite file `do-the-other-stuff.sqlite` is created automatically; reset with `bun run reset-db` if needed.
 - When mutating client-side state in the inline script, call `refreshUI()` so the login controls, hero input, and other UI panels redraw correctly.
@@ -8,5 +10,6 @@
 - Always check for type errors before finishing the job.
 - Ensure you always review links to images when presented in a prompt.
 - Run lint before shipping: `bun run lint` (use `bun run lint:fix` for autofixes) and keep commits clean.
-- Run a quick smoke check before shipping: start the app with `bun dev`, click through login/logout and add/update/delete todos, and watch the terminal for runtime errors.
+- Lint enforces async/import hygiene (no floating promises, ordered imports); fix warnings instead of silencing them.
 - Commit every change with a clear message so rollbacks stay easy, and avoid touching unrelated local edits.
+- Make a note of current commit before starting and after a change has completed
