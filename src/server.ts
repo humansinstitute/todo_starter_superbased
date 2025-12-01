@@ -975,7 +975,8 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       }
       try {
         const { nip19 } = await loadNostrLibs();
-        const nsec = nip19.nsecEncode(stored);
+        const secret = hexToBytes(stored);
+        const nsec = nip19.nsecEncode(secret);
         await navigator.clipboard.writeText(nsec);
         alert("Secret key copied to clipboard!\\n\\nKeep this safe - anyone with this key can access your account.");
       } catch (err) {
