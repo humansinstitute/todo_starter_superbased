@@ -36,7 +36,7 @@ const STATIC_FILES = new Map<string, string>([
   ["/manifest.webmanifest", "manifest.webmanifest"],
 ]);
 
-type LoginMethod = "ephemeral" | "extension" | "bunker";
+type LoginMethod = "ephemeral" | "extension" | "bunker" | "secret";
 
 type Session = {
   token: string;
@@ -667,6 +667,10 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
           <input name="bunker" placeholder="nostrconnect://… or name@example.com" autocomplete="off" />
           <button class="bunker-submit" type="submit">Connect bunker</button>
         </form>
+        <form data-secret-form>
+          <input name="secret" placeholder="nsec1…" autocomplete="off" />
+          <button class="bunker-submit" type="submit">Sign in with secret</button>
+        </form>
       </details>
       <p class="auth-error" data-login-error hidden></p>
     </section>
@@ -992,6 +996,18 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
 
     const bytesToHex = (bytes) => Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 
+    const decodeNsec = (nip19, input) => {
+      try {
+        const decoded = nip19.decode(input);
+        if (decoded.type !== "nsec" || !decoded.data) throw new Error("Not a valid nsec key.");
+        if (decoded.data instanceof Uint8Array) return decoded.data;
+        if (Array.isArray(decoded.data)) return new Uint8Array(decoded.data);
+        throw new Error("Unable to read nsec payload.");
+      } catch (err) {
+        throw new Error("Invalid nsec key.");
+      }
+    };
+
     const buildUnsignedEvent = (method) => ({
       kind: LOGIN_KIND,
       created_at: Math.floor(Date.now() / 1000),
@@ -1039,6 +1055,7 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
     };
 
     const bunkerForm = document.querySelector("[data-bunker-form]");
+    const secretForm = document.querySelector("[data-secret-form]");
     bunkerForm?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const input = bunkerForm.querySelector("input[name='bunker']");
@@ -1057,6 +1074,27 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
         showError(err?.message || "Unable to connect to bunker.");
       } finally {
         bunkerForm.classList.remove("is-busy");
+      }
+    });
+
+    secretForm?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const input = secretForm.querySelector("input[name='secret']");
+      if (!input?.value.trim()) {
+        showError("Paste an nsec secret key to continue.");
+        return;
+      }
+      secretForm.classList.add("is-busy");
+      clearError();
+      try {
+        const signedEvent = await signLoginEvent("secret", input.value.trim());
+        await completeLogin("secret", signedEvent);
+        input.value = "";
+      } catch (err) {
+        console.error(err);
+        showError(err?.message || "Unable to sign in with secret.");
+      } finally {
+        secretForm.classList.remove("is-busy");
       }
     });
 
@@ -1093,6 +1131,11 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
         } finally {
           await signer.close();
         }
+      }
+      if (method === "secret") {
+        const { pure, nip19 } = await loadNostrLibs();
+        const secret = decodeNsec(nip19, supplemental || "");
+        return pure.finalizeEvent(buildUnsignedEvent(method), secret);
       }
       throw new Error("Unsupported login method.");
     }
