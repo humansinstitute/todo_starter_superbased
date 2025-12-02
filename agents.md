@@ -13,3 +13,5 @@
 - Lint enforces async/import hygiene (no floating promises, ordered imports) and parses inline `<script>` blocks for syntax errors; fix warnings instead of silencing them.
 - Commit every change with a clear message so rollbacks stay easy, and avoid touching unrelated local edits.
 - Make a note of current commit before starting and after a change has completed
+- For schema and ownership details, consult `docs/data_model.md` before changing queries or migrations.
+- For AI agent interactions (fetching tasks, posting summaries), follow `docs/agent_api_spec.md` for endpoints, payloads, and example curls.
