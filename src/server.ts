@@ -3,7 +3,17 @@ import { extname, join } from "path";
 import { nip19 } from "nostr-tools";
 import { verifyEvent } from "nostr-tools/pure";
 
-import { addTodo, deleteTodo, listTodos, transitionTodo, updateTodo } from "./db";
+import {
+  addTodo,
+  deleteTodo,
+  getLatestSummaries,
+  listScheduledTodos,
+  listTodos,
+  listUnscheduledTodos,
+  transitionTodo,
+  updateTodo,
+  upsertSummary,
+} from "./db";
 
 import type { Todo, TodoPriority, TodoState } from "./db";
 
@@ -63,6 +73,15 @@ const server = Bun.serve({
       if (staticResponse) return staticResponse;
     }
 
+    const aiTasksMatch = req.method === "GET" ? pathname.match(/^\/ai\/tasks\/(\d+)(?:\/(yes|no))?$/) : null;
+    if (aiTasksMatch) {
+      return handleAiTasks(req, url, aiTasksMatch);
+    }
+
+    if (req.method === "GET" && pathname === "/ai/summary/latest") {
+      return handleLatestSummary(url);
+    }
+
     if (req.method === "GET" && pathname === "/") {
       return new Response(renderPage({ showArchive: url.searchParams.get("archive") === "1", session }), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
@@ -75,6 +94,10 @@ const server = Bun.serve({
 
     if (req.method === "POST" && pathname === "/auth/logout") {
       return handleLogout(req);
+    }
+
+    if (req.method === "POST" && pathname === "/ai/summary") {
+      return handleSummaryPost(req);
     }
 
     if (req.method === "POST") {
@@ -562,6 +585,49 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       border-color: #ddd;
       cursor: not-allowed;
     }
+    .summary-panel {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      border-radius: 12px;
+      border: 1px solid #e5e5e5;
+      background: #fff;
+      box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+    }
+    .summary-panel h2 {
+      margin: 0;
+    }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+      margin-top: 0.75rem;
+    }
+    .summary-card {
+      border: 1px solid #f0f0f0;
+      border-radius: 10px;
+      padding: 0.75rem 0.9rem;
+      background: #fafafa;
+    }
+    .summary-card h3 {
+      margin: 0 0 0.35rem;
+      font-size: 1rem;
+    }
+    .summary-text {
+      margin: 0;
+      white-space: pre-wrap;
+      color: #333;
+      line-height: 1.45;
+    }
+    .summary-meta {
+      margin-top: 0.4rem;
+      font-size: 0.85rem;
+      color: #666;
+    }
+    .summary-suggestions {
+      border-top: 1px dashed #e0e0e0;
+      padding-top: 0.6rem;
+      margin-top: 0.6rem;
+    }
   </style>
 </head>
 <body>
@@ -613,6 +679,26 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
         <p class="hero-hint" data-hero-hint hidden>Sign in above to add tasks.</p>
       </form>
     </section>
+    <section class="summary-panel" data-summary-panel hidden>
+      <div class="section-heading">
+        <h2>Summaries</h2>
+        <span class="summary-meta" data-summary-updated></span>
+      </div>
+      <div class="summary-grid">
+        <article class="summary-card" data-summary-day hidden>
+          <h3>Today</h3>
+          <p class="summary-text" data-summary-day-text></p>
+        </article>
+        <article class="summary-card" data-summary-week hidden>
+          <h3>This Week</h3>
+          <p class="summary-text" data-summary-week-text></p>
+        </article>
+        <article class="summary-card summary-suggestions" data-summary-suggestions hidden>
+          <h3>Suggestions</h3>
+          <p class="summary-text" data-summary-suggestions-text></p>
+        </article>
+      </div>
+    </section>
     <div class="work-header">
       <h2>Work</h2>
       <a class="archive-toggle" href="${archiveHref}">${archiveLabel}</a>
@@ -631,7 +717,7 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
     const DEFAULT_RELAYS = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.devvul.com", "wss://purplepag.es"];
     const AUTO_LOGIN_METHOD_KEY = "nostr_auto_login_method";
     const AUTO_LOGIN_PUBKEY_KEY = "nostr_auto_login_pubkey";
-    const state = { session: window.__NOSTR_SESSION__ };
+    const state = { session: window.__NOSTR_SESSION__, summaries: { day: null, week: null } };
 
     const focusInput = () => {
       const input = document.getElementById("title");
@@ -650,6 +736,14 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
     const avatarImg = document.querySelector("[data-avatar-img]");
     const avatarFallback = document.querySelector("[data-avatar-fallback]");
     const avatarMenu = document.querySelector("[data-avatar-menu]");
+    const summaryPanel = document.querySelector("[data-summary-panel]");
+    const summaryUpdated = document.querySelector("[data-summary-updated]");
+    const summaryDay = document.querySelector("[data-summary-day]");
+    const summaryDayText = document.querySelector("[data-summary-day-text]");
+    const summaryWeek = document.querySelector("[data-summary-week]");
+    const summaryWeekText = document.querySelector("[data-summary-week-text]");
+    const summarySuggestions = document.querySelector("[data-summary-suggestions]");
+    const summarySuggestionsText = document.querySelector("[data-summary-suggestions-text]");
 
     const updatePanels = () => {
       if (state.session) {
@@ -663,6 +757,7 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       }
       updateHeroState();
       updateAvatar();
+      updateSummaryUI();
     };
 
     // Single place to trigger a UI redraw after state mutations.
@@ -683,6 +778,56 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       }
     };
 
+    const updateSummaryUI = () => {
+      if (!summaryPanel) return;
+      const { day, week } = state.summaries || {};
+      const hasDay = !!day?.day_ahead;
+      const hasWeek = !!week?.week_ahead;
+      const suggestionsText = day?.suggestions || week?.suggestions;
+      const latestUpdated = day?.updated_at || week?.updated_at || "";
+
+      if (!state.session || (!hasDay && !hasWeek && !suggestionsText)) {
+        summaryPanel.setAttribute("hidden", "hidden");
+        return;
+      }
+
+      summaryPanel.removeAttribute("hidden");
+
+      if (summaryDay && summaryDayText) {
+        if (hasDay && day?.day_ahead) {
+          summaryDayText.textContent = day.day_ahead;
+          summaryDay.removeAttribute("hidden");
+        } else {
+          summaryDay.setAttribute("hidden", "hidden");
+          summaryDayText.textContent = "";
+        }
+      }
+
+      if (summaryWeek && summaryWeekText) {
+        if (hasWeek && week?.week_ahead) {
+          summaryWeekText.textContent = week.week_ahead;
+          summaryWeek.removeAttribute("hidden");
+        } else {
+          summaryWeek.setAttribute("hidden", "hidden");
+          summaryWeekText.textContent = "";
+        }
+      }
+
+      if (summarySuggestions && summarySuggestionsText) {
+        if (suggestionsText) {
+          summarySuggestionsText.textContent = suggestionsText;
+          summarySuggestions.removeAttribute("hidden");
+        } else {
+          summarySuggestionsText.textContent = "";
+          summarySuggestions.setAttribute("hidden", "hidden");
+        }
+      }
+
+      if (summaryUpdated) {
+        summaryUpdated.textContent = latestUpdated ? \`Updated \${new Date(latestUpdated).toLocaleString()}\` : "";
+      }
+    };
+
     const showError = (message) => {
       if (!errorTarget) return;
       errorTarget.textContent = message;
@@ -698,6 +843,21 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
     const clearAutoLogin = () => {
       localStorage.removeItem(AUTO_LOGIN_METHOD_KEY);
       localStorage.removeItem(AUTO_LOGIN_PUBKEY_KEY);
+    };
+
+    const fetchSummaries = async () => {
+      if (!state.session) return;
+      try {
+        const response = await fetch(\`/ai/summary/latest?owner=\${encodeURIComponent(state.session.npub)}\`);
+        if (!response.ok) throw new Error("Unable to fetch summaries.");
+        const data = await response.json();
+        state.summaries = { day: data?.day ?? null, week: data?.week ?? null };
+      } catch (error) {
+        console.error(error);
+        state.summaries = { day: null, week: null };
+      } finally {
+        updateSummaryUI();
+      }
     };
 
     const loadNostrLibs = async () => {
@@ -958,6 +1118,7 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       } else {
         clearAutoLogin();
       }
+      await fetchSummaries();
       refreshUI();
     }
 
@@ -989,11 +1150,15 @@ function renderPage({ showArchive, session }: { showArchive: boolean; session: S
       closeAvatarMenu();
       await fetch("/auth/logout", { method: "POST" });
       state.session = null;
+      state.summaries = { day: null, week: null };
       clearAutoLogin();
       refreshUI();
     });
 
     refreshUI();
+    if (state.session) {
+      void fetchSummaries();
+    }
     maybeAutoLogin();
   </script>
 </body>
@@ -1106,6 +1271,120 @@ function jsonResponse(body: unknown, status = 200, cookie?: string) {
   return new Response(JSON.stringify(body), { status, headers });
 }
 
+function handleAiTasks(_req: Request, url: URL, match: RegExpMatchArray) {
+  const owner = url.searchParams.get("owner");
+  if (!owner) return jsonResponse({ message: "Missing owner." }, 400);
+
+  const days = Number(match[1]);
+  if (!Number.isFinite(days) || days <= 0) return jsonResponse({ message: "Invalid day range." }, 400);
+
+  const includeUnscheduled = (match[2] || "yes").toLowerCase() !== "no";
+  const today = formatLocalDate(new Date());
+  const endDate = formatLocalDate(addDays(new Date(), Math.max(days - 1, 0)));
+
+  const scheduled = listScheduledTodos(owner, today, endDate);
+  const unscheduled = includeUnscheduled ? listUnscheduledTodos(owner) : [];
+
+  return jsonResponse({
+    owner,
+    range_days: days,
+    generated_at: new Date().toISOString(),
+    scheduled,
+    unscheduled: includeUnscheduled ? unscheduled : [],
+  });
+}
+
+async function handleSummaryPost(req: Request) {
+  const body = (await safeJson(req)) as Partial<{
+    owner: string;
+    summary_date: string;
+    day_ahead: string | null;
+    week_ahead: string | null;
+    suggestions: string | null;
+  }> | null;
+  if (!body?.owner || !body.summary_date) {
+    return jsonResponse({ message: "Missing owner or summary_date." }, 400);
+  }
+
+  if (!isValidDateString(body.summary_date)) {
+    return jsonResponse({ message: "Invalid summary_date format. Use YYYY-MM-DD." }, 422);
+  }
+
+  const dayAhead = normalizeSummaryText(body.day_ahead);
+  const weekAhead = normalizeSummaryText(body.week_ahead);
+  const suggestions = normalizeSummaryText(body.suggestions);
+
+  if (!dayAhead && !weekAhead && !suggestions) {
+    return jsonResponse({ message: "Provide at least one of day_ahead, week_ahead, or suggestions." }, 422);
+  }
+
+  const summary = upsertSummary({
+    owner: body.owner,
+    summaryDate: body.summary_date,
+    dayAhead,
+    weekAhead,
+    suggestions,
+  });
+
+  if (!summary) return jsonResponse({ message: "Unable to save summary." }, 500);
+
+  return jsonResponse({
+    owner: summary.owner,
+    summary_date: summary.summary_date,
+    updated_at: summary.updated_at,
+  });
+}
+
+function handleLatestSummary(url: URL) {
+  const owner = url.searchParams.get("owner");
+  if (!owner) return jsonResponse({ message: "Missing owner." }, 400);
+  const today = new Date();
+  const todayString = formatLocalDate(today);
+  const weekStart = startOfWeek(today);
+  const weekEnd = addDays(weekStart, 6);
+  const { day, week } = getLatestSummaries(owner, todayString, formatLocalDate(weekStart), formatLocalDate(weekEnd));
+  return jsonResponse({
+    owner,
+    day,
+    week,
+  });
+}
+
+function formatLocalDate(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function startOfWeek(date: Date) {
+  const result = new Date(date);
+  const day = result.getDay(); // 0 = Sunday
+  const diff = (day + 6) % 7; // days since Monday
+  result.setDate(result.getDate() - diff);
+  result.setHours(0, 0, 0, 0);
+  return result;
+}
+
+function isValidDateString(value: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(value + "T00:00:00");
+  return !Number.isNaN(parsed.valueOf());
+}
+
+function normalizeSummaryText(value: string | null | undefined) {
+  if (value === null || value === undefined) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  return trimmed.slice(0, 10000);
+}
+
 function escapeHtml(input: string) {
   return input
     .replace(/&/g, "&amp;")
@@ -1115,14 +1394,16 @@ function escapeHtml(input: string) {
 }
 
 function parseUpdateForm(form: FormData):
-  | { title: string; description: string; priority: TodoPriority; state: TodoState }
+  | { title: string; description: string; priority: TodoPriority; state: TodoState; scheduled_for: string | null }
   | null {
   const title = String(form.get("title") ?? "").trim();
   if (!title) return null;
   const description = String(form.get("description") ?? "").trim();
   const priority = normalizePriority(String(form.get("priority") ?? "sand"));
   const state = normalizeState(String(form.get("state") ?? "ready"));
-  return { title, description, priority, state };
+  const scheduledRaw = String(form.get("scheduled_for") ?? "").trim();
+  const scheduled_for = scheduledRaw && isValidDateString(scheduledRaw) ? scheduledRaw : null;
+  return { title, description, priority, state, scheduled_for };
 }
 
 function normalizePriority(input: string): TodoPriority {
@@ -1141,6 +1422,9 @@ function normalizeState(input: string): TodoState {
 
 function renderTodoItem(todo: Todo) {
   const description = todo.description ? `<p class="todo-description">${escapeHtml(todo.description)}</p>` : "";
+  const scheduled = todo.scheduled_for
+    ? `<p class="todo-description"><strong>Scheduled for:</strong> ${escapeHtml(todo.scheduled_for)}</p>`
+    : "";
   return `
     <li>
       <details>
@@ -1153,6 +1437,7 @@ function renderTodoItem(todo: Todo) {
         </summary>
         <div class="todo-body">
           ${description}
+          ${scheduled}
           <form class="edit-form" method="post" action="/todos/${todo.id}/update">
             <label>Title
               <input name="title" value="${escapeHtml(todo.title)}" required />
@@ -1174,6 +1459,9 @@ function renderTodoItem(todo: Todo) {
                 ${renderStateOption("in_progress", todo.state)}
                 ${renderStateOption("done", todo.state)}
               </select>
+            </label>
+            <label>Scheduled For
+              <input type="date" name="scheduled_for" value="${todo.scheduled_for ? escapeHtml(todo.scheduled_for) : ""}" />
             </label>
             <button type="submit">Update</button>
           </form>
