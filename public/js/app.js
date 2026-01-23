@@ -15,6 +15,7 @@ import {
   loadQRCodeLib,
   clearMemoryCredentials,
   setMemoryPubkey,
+  tryAutoLoginFromStorage,
   STORAGE_KEYS,
 } from './nostr.js';
 import {
@@ -110,13 +111,40 @@ Alpine.store('app', {
   },
 
   async maybeAutoLogin() {
+    // Try new secure storage first
+    const storedAuth = await tryAutoLoginFromStorage();
+    if (storedAuth) {
+      // Handle bunker reconnection
+      if (storedAuth.needsReconnect && storedAuth.method === 'bunker') {
+        // Auto-reconnect to bunker
+        try {
+          await this.login('bunker', storedAuth.bunkerUri);
+          return;
+        } catch (err) {
+          console.error('Bunker reconnect failed:', err);
+          // Fall through to manual login
+        }
+      } else {
+        // Direct restore for ephemeral/secret/extension
+        const npub = await pubkeyToNpub(storedAuth.pubkey);
+        this.session = {
+          pubkey: storedAuth.pubkey,
+          npub,
+          method: storedAuth.method,
+        };
+        setMemoryPubkey(storedAuth.pubkey);
+        await this.loadTodos();
+        return;
+      }
+    }
+
+    // Fall back to legacy auto-login
     const method = getAutoLoginMethod();
     if (!method) return;
 
     if (method === 'ephemeral' && hasEphemeralSecret()) {
       await this.login('ephemeral');
     }
-    // For other methods, user needs to re-authenticate
   },
 
   async login(method, supplemental = null) {
@@ -152,9 +180,8 @@ Alpine.store('app', {
     this.todos = [];
     this.filterTags = [];
     this.showAvatarMenu = false;
-    clearAutoLogin();
+    await clearAutoLogin();
     clearMemoryCredentials();
-    localStorage.removeItem(STORAGE_KEYS.EPHEMERAL_SECRET);
   },
 
   async loadTodos() {

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'super-based-todo-v3';
+const CACHE_NAME = 'super-based-todo-v4';
 
 const ASSETS_TO_CACHE = [
   '/',
@@ -8,6 +8,7 @@ const ASSETS_TO_CACHE = [
   '/js/nostr.js',
   '/js/nostr-cvm.js',
   '/js/utils.js',
+  '/js/secure-store.js',
   '/css/app.css',
   '/icon-192.png',
   '/icon-512.png',

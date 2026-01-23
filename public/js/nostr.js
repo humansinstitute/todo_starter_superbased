@@ -1,10 +1,17 @@
 // Nostr authentication utilities
+import {
+  storeCredentials,
+  getStoredCredentials,
+  clearCredentials,
+  refreshCredentialExpiry,
+} from './secure-store.js';
 
 export const LOGIN_KIND = 27235;
+export const AUTH_KIND = 22242; // NIP-42 AUTH kind
 export const DEFAULT_RELAYS = ['wss://relay.damus.io', 'wss://nos.lol', 'wss://relay.devvul.com', 'wss://purplepag.es'];
-export const APP_TAG = 'other-stuff-to-do';
+export const APP_TAG = 'super-based-todo';
 
-// Storage keys
+// Storage keys (legacy - being phased out)
 export const STORAGE_KEYS = {
   AUTO_LOGIN_METHOD: 'nostr_auto_login_method',
   AUTO_LOGIN_PUBKEY: 'nostr_auto_login_pubkey',
@@ -75,7 +82,21 @@ export function buildUnsignedEvent(method) {
       ['app', APP_TAG],
       ['method', method],
     ],
-    content: 'Authenticate with Other Stuff To Do',
+    content: 'Authenticate with Super Based Todo',
+  };
+}
+
+// Build NIP-42 style auth event for extension persistence
+export function buildAuthEvent(pubkey) {
+  return {
+    kind: AUTH_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    pubkey,
+    tags: [
+      ['app', APP_TAG],
+      ['challenge', crypto.randomUUID()],
+    ],
+    content: 'Auth token for Super Based Todo',
   };
 }
 
@@ -106,23 +127,59 @@ export async function signLoginEvent(method, supplemental = null) {
   const { pure, nip19, nip46 } = await loadNostrLibs();
 
   if (method === 'ephemeral') {
-    let stored = localStorage.getItem(STORAGE_KEYS.EPHEMERAL_SECRET);
-    if (!stored) {
-      stored = bytesToHex(pure.generateSecretKey());
-      localStorage.setItem(STORAGE_KEYS.EPHEMERAL_SECRET, stored);
+    // Check secure storage first, then legacy localStorage
+    const storedCreds = await getStoredCredentials();
+    let secretHex;
+
+    if (storedCreds?.method === 'ephemeral' && storedCreds.secretHex) {
+      secretHex = storedCreds.secretHex;
+    } else {
+      // Check legacy storage
+      const legacySecret = localStorage.getItem(STORAGE_KEYS.EPHEMERAL_SECRET);
+      if (legacySecret) {
+        secretHex = legacySecret;
+        // Migrate to secure storage
+        localStorage.removeItem(STORAGE_KEYS.EPHEMERAL_SECRET);
+      } else {
+        // Generate new key
+        secretHex = bytesToHex(pure.generateSecretKey());
+      }
     }
-    const secret = hexToBytes(stored);
+
+    const secret = hexToBytes(secretHex);
     setMemorySecret(secret);
-    return pure.finalizeEvent(buildUnsignedEvent(method), secret);
+    const event = pure.finalizeEvent(buildUnsignedEvent(method), secret);
+
+    // Store in secure storage
+    await storeCredentials({
+      method: 'ephemeral',
+      pubkey: event.pubkey,
+      secretHex,
+    });
+
+    return event;
   }
 
   if (method === 'extension') {
     if (!window.nostr?.signEvent) {
       throw new Error('No NIP-07 browser extension found.');
     }
+    const pubkey = await window.nostr.getPublicKey();
     const event = buildUnsignedEvent(method);
-    event.pubkey = await window.nostr.getPublicKey();
-    return window.nostr.signEvent(event);
+    event.pubkey = pubkey;
+    const signedEvent = await window.nostr.signEvent(event);
+
+    // Create and store auth token for persistence
+    const authEvent = buildAuthEvent(pubkey);
+    const signedAuth = await window.nostr.signEvent(authEvent);
+
+    await storeCredentials({
+      method: 'extension',
+      pubkey,
+      authEvent: signedAuth,
+    });
+
+    return signedEvent;
   }
 
   if (method === 'bunker') {
@@ -147,26 +204,118 @@ export async function signLoginEvent(method, supplemental = null) {
     setMemoryBunkerSigner(signer);
     setMemoryBunkerUri(bunkerUri);
 
-    return await signer.signEvent(buildUnsignedEvent(method));
+    const event = await signer.signEvent(buildUnsignedEvent(method));
+
+    // Store bunker URI for reconnection
+    await storeCredentials({
+      method: 'bunker',
+      pubkey: event.pubkey,
+      bunkerUri,
+    });
+
+    return event;
   }
 
   if (method === 'secret') {
     let secret = getMemorySecret();
+    let secretHex;
 
     if (!secret && supplemental) {
       const decodedSecret = decodeNsec(nip19, supplemental);
       secret = decodedSecret;
+      secretHex = bytesToHex(secret);
       setMemorySecret(secret);
+    } else if (secret) {
+      secretHex = bytesToHex(secret);
     }
 
     if (!secret) {
       throw new Error('No secret key available.');
     }
 
-    return pure.finalizeEvent(buildUnsignedEvent(method), secret);
+    const event = pure.finalizeEvent(buildUnsignedEvent(method), secret);
+
+    // Store in secure storage
+    await storeCredentials({
+      method: 'secret',
+      pubkey: event.pubkey,
+      secretHex,
+    });
+
+    return event;
   }
 
   throw new Error('Unsupported login method.');
+}
+
+// Attempt auto-login from secure storage
+export async function tryAutoLoginFromStorage() {
+  const creds = await getStoredCredentials();
+  if (!creds) return null;
+
+  const { pure } = await loadNostrLibs();
+
+  try {
+    if (creds.method === 'ephemeral' || creds.method === 'secret') {
+      if (!creds.secretHex) return null;
+      const secret = hexToBytes(creds.secretHex);
+      setMemorySecret(secret);
+      setMemoryPubkey(creds.pubkey);
+      await refreshCredentialExpiry();
+      return {
+        pubkey: creds.pubkey,
+        method: creds.method,
+      };
+    }
+
+    if (creds.method === 'extension') {
+      // Verify extension is available
+      if (!window.nostr?.getPublicKey) return null;
+
+      // Verify the stored auth event
+      if (!creds.authEvent) return null;
+
+      // Check auth event is still valid (not too old)
+      const authAge = Date.now() / 1000 - creds.authEvent.created_at;
+      const maxAge = 7 * 24 * 60 * 60; // 7 days in seconds
+      if (authAge > maxAge) {
+        await clearCredentials();
+        return null;
+      }
+
+      // Verify pubkey matches current extension
+      const currentPubkey = await window.nostr.getPublicKey();
+      if (currentPubkey !== creds.pubkey) {
+        await clearCredentials();
+        return null;
+      }
+
+      setMemoryPubkey(currentPubkey);
+      await refreshCredentialExpiry();
+      return {
+        pubkey: currentPubkey,
+        method: 'extension',
+      };
+    }
+
+    if (creds.method === 'bunker') {
+      // Bunker needs reconnection - return info for manual reconnect
+      if (!creds.bunkerUri) return null;
+      setMemoryBunkerUri(creds.bunkerUri);
+      // Don't auto-connect, just prepare for it
+      return {
+        pubkey: creds.pubkey,
+        method: 'bunker',
+        needsReconnect: true,
+        bunkerUri: creds.bunkerUri,
+      };
+    }
+  } catch (err) {
+    console.error('Auto-login failed:', err);
+    return null;
+  }
+
+  return null;
 }
 
 // Get public key from signed event
@@ -181,9 +330,13 @@ export async function pubkeyToNpub(pubkey) {
 }
 
 // Clear auto-login data
-export function clearAutoLogin() {
+export async function clearAutoLogin() {
+  // Clear legacy localStorage
   localStorage.removeItem(STORAGE_KEYS.AUTO_LOGIN_METHOD);
   localStorage.removeItem(STORAGE_KEYS.AUTO_LOGIN_PUBKEY);
+  localStorage.removeItem(STORAGE_KEYS.EPHEMERAL_SECRET);
+  // Clear secure storage
+  await clearCredentials();
 }
 
 // Set auto-login data
