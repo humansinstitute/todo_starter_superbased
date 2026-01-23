@@ -67,16 +67,16 @@
           <span x-show="!$store.app.isLoggingIn">Sign Up</span>
           <span x-show="$store.app.isLoggingIn">Signing in...</span>
         </button>
-      </div>
-      <details class="auth-advanced">
-        <summary>Advanced options</summary>
-        <p>Use a browser extension or connect to a remote bunker.</p>
         <button
-          class="auth-option"
+          class="auth-option auth-extension"
           type="button"
           :disabled="$store.app.isLoggingIn"
           @click="$store.app.login('extension')"
-        >Browser extension</button>
+        >Browser Extension</button>
+      </div>
+      <details class="auth-advanced">
+        <summary>Advanced options</summary>
+        <p>Connect to a remote bunker or paste your nsec.</p>
         <form class="auth-form" @submit.prevent="$store.app.login('bunker', $refs.bunkerInput.value)">
           <input
             x-ref="bunkerInput"

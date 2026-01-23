@@ -458,6 +458,17 @@ summary::-webkit-details-marker {
   opacity: 0.6;
   cursor: progress;
 }
+.auth-extension {
+  background: #8b5cf6;
+  color: #fff;
+  border-color: #8b5cf6;
+}
+.auth-extension:hover:not(:disabled),
+.auth-extension:active:not(:disabled) {
+  background: #f97316;
+  border-color: #f97316;
+  color: #fff;
+}
 .auth-advanced {
   margin-top: 0.5rem;
   padding-top: 0.75rem;
