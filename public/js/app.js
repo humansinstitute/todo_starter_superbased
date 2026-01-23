@@ -309,6 +309,9 @@ Alpine.data('todoItem', (todo) => ({
         tags: this.localTodo.tags,
       });
       store.stopEditing();
+      // Close the details element
+      const details = this.$el.querySelector('details');
+      if (details) details.open = false;
       await store.loadTodos();
     } catch (err) {
       console.error('Failed to save todo:', err);
