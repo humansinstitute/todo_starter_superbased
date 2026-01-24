@@ -8,6 +8,12 @@ db.version(1).stores({
   deviceKey: 'id',    // Single row for device encryption key
 });
 
+db.version(2).stores({
+  credentials: 'id',
+  deviceKey: 'id',
+  profiles: 'pubkey', // Profile cache by pubkey
+});
+
 const DEVICE_KEY_ID = 'device-key';
 const CRED_ID = 'primary';
 const AUTH_EXPIRY_DAYS = 7;
@@ -199,4 +205,51 @@ export async function refreshCredentialExpiry() {
     record.expiresAt = Date.now() + (AUTH_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
     await db.credentials.put(record);
   }
+}
+
+// ===========================================
+// Profile Cache
+// ===========================================
+
+const PROFILE_CACHE_HOURS = 24;
+
+/**
+ * Store profile in cache
+ * @param {string} pubkey - Public key (hex)
+ * @param {Object} profile - Profile data (name, picture, about, etc.)
+ */
+export async function cacheProfile(pubkey, profile) {
+  await db.profiles.put({
+    pubkey,
+    profile,
+    cachedAt: Date.now(),
+  });
+}
+
+/**
+ * Get cached profile
+ * @param {string} pubkey - Public key (hex)
+ * @returns {Object|null} Profile data or null if not cached/expired
+ */
+export async function getCachedProfile(pubkey) {
+  const record = await db.profiles.get(pubkey);
+  if (!record) return null;
+
+  // Check if cache is still valid
+  const maxAge = PROFILE_CACHE_HOURS * 60 * 60 * 1000;
+  if (Date.now() - record.cachedAt > maxAge) {
+    // Expired, delete and return null
+    await db.profiles.delete(pubkey);
+    return null;
+  }
+
+  return record.profile;
+}
+
+/**
+ * Clear profile from cache
+ * @param {string} pubkey - Public key (hex)
+ */
+export async function clearCachedProfile(pubkey) {
+  await db.profiles.delete(pubkey);
 }

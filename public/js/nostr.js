@@ -4,6 +4,8 @@ import {
   getStoredCredentials,
   clearCredentials,
   refreshCredentialExpiry,
+  cacheProfile,
+  getCachedProfile,
 } from './secure-store.js';
 
 export const LOGIN_KIND = 27235;
@@ -18,7 +20,6 @@ export const STORAGE_KEYS = {
   EPHEMERAL_SECRET: 'nostr_ephemeral_secret',
   ENCRYPTED_SECRET: 'nostr_encrypted_secret',
   ENCRYPTED_BUNKER: 'nostr_encrypted_bunker',
-  PROFILE_CACHE: 'nostr_profile_cache',
 };
 
 // Lazy-load nostr-tools
@@ -31,6 +32,7 @@ export async function loadNostrLibs() {
       nip19: await import(/* @vite-ignore */ `${base}/nip19`),
       nip44: await import(/* @vite-ignore */ `${base}/nip44`),
       nip46: await import(/* @vite-ignore */ `${base}/nip46`),
+      pool: await import(/* @vite-ignore */ `${base}/pool`),
     };
   }
   return nostrLibs;
@@ -446,4 +448,64 @@ export async function encryptObject(obj) {
 export async function decryptObject(ciphertext) {
   const plaintext = await decryptFromSelf(ciphertext);
   return JSON.parse(plaintext);
+}
+
+// ===========================================
+// Profile Fetching
+// ===========================================
+
+const PROFILE_KIND = 0;
+const PROFILE_FETCH_TIMEOUT = 5000;
+
+/**
+ * Fetch user profile (kind 0) from relays
+ * Returns { name, picture, about, nip05, ... } or null
+ */
+export async function fetchProfile(pubkeyHex) {
+  // Check Dexie cache first
+  const cached = await getCachedProfile(pubkeyHex);
+  if (cached) return cached;
+
+  const { pool } = await loadNostrLibs();
+  const relayPool = new pool.SimplePool();
+
+  try {
+    const filter = {
+      kinds: [PROFILE_KIND],
+      authors: [pubkeyHex],
+      limit: 1,
+    };
+
+    // Query relays with timeout
+    const events = await Promise.race([
+      relayPool.querySync(DEFAULT_RELAYS, filter),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Timeout')), PROFILE_FETCH_TIMEOUT)
+      ),
+    ]);
+
+    if (events && events.length > 0) {
+      // Get most recent profile event
+      const latest = events.reduce((a, b) =>
+        (a.created_at > b.created_at) ? a : b
+      );
+
+      try {
+        const profile = JSON.parse(latest.content);
+        // Cache the profile in Dexie
+        await cacheProfile(pubkeyHex, profile);
+        return profile;
+      } catch {
+        console.error('Failed to parse profile content');
+        return null;
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error('Failed to fetch profile:', err);
+    return null;
+  } finally {
+    relayPool.close(DEFAULT_RELAYS);
+  }
 }

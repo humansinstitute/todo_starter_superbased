@@ -16,6 +16,7 @@ import {
   clearMemoryCredentials,
   setMemoryPubkey,
   tryAutoLoginFromStorage,
+  fetchProfile,
   STORAGE_KEYS,
 } from './nostr.js';
 import {
@@ -27,6 +28,13 @@ import {
   parseTags,
   formatTags,
 } from './utils.js';
+import {
+  getInstanceNpub,
+  generateRegistrationBlob,
+  checkForTeleportInUrl,
+  decodeTeleportBlob,
+  decryptWithUnlockCode,
+} from './keyteleport.js';
 
 // Make Alpine available globally for debugging
 window.Alpine = Alpine;
@@ -37,6 +45,7 @@ Alpine.store('app', {
   session: null,
   isLoggingIn: false,
   loginError: null,
+  profile: null, // { name, picture, about, nip05, ... }
 
   // Todos
   todos: [],
@@ -48,6 +57,16 @@ Alpine.store('app', {
   showQrModal: false,
   showProfileModal: false,
   editingTodoId: null,
+
+  // Key Teleport state
+  showTeleportSetupModal: false,
+  showTeleportUnlockModal: false,
+  instanceNpub: '',
+  teleportNpub: '',
+  teleportUnlockCode: '',
+  teleportError: null,
+  isProcessingTeleport: false,
+  pendingTeleport: null, // Stores { encryptedNsec, npub } during unlock
 
   // New todo input
   newTodoTitle: '',
@@ -91,6 +110,17 @@ Alpine.store('app', {
     return formatAvatarFallback(this.session?.npub);
   },
 
+  get displayName() {
+    if (this.profile?.name) return this.profile.name;
+    if (this.profile?.display_name) return this.profile.display_name;
+    if (this.session?.npub) return this.session.npub.slice(0, 12) + '...';
+    return 'Anonymous';
+  },
+
+  get avatarUrl() {
+    return this.profile?.picture || null;
+  },
+
   get remainingText() {
     if (!this.isLoggedIn) return '';
     const count = this.activeTodos.length;
@@ -99,7 +129,14 @@ Alpine.store('app', {
 
   // Actions
   async init() {
-    // Check for fragment login first
+    // Check for Key Teleport first (highest priority)
+    const teleportBlob = checkForTeleportInUrl();
+    if (teleportBlob) {
+      await this.handleIncomingTeleport(teleportBlob);
+      return;
+    }
+
+    // Check for fragment login
     const fragmentMethod = await parseFragmentLogin();
     if (fragmentMethod) {
       await this.login(fragmentMethod);
@@ -134,6 +171,8 @@ Alpine.store('app', {
         };
         setMemoryPubkey(storedAuth.pubkey);
         await this.loadTodos();
+        // Fetch profile in background
+        this.loadProfile(storedAuth.pubkey);
         return;
       }
     }
@@ -167,6 +206,9 @@ Alpine.store('app', {
 
       setAutoLogin(method, pubkey);
       await this.loadTodos();
+
+      // Fetch profile in background (don't block login)
+      this.loadProfile(pubkey);
     } catch (err) {
       console.error('Login failed:', err);
       this.loginError = err.message || 'Login failed.';
@@ -177,11 +219,23 @@ Alpine.store('app', {
 
   async logout() {
     this.session = null;
+    this.profile = null;
     this.todos = [];
     this.filterTags = [];
     this.showAvatarMenu = false;
     await clearAutoLogin();
     clearMemoryCredentials();
+  },
+
+  async loadProfile(pubkeyHex) {
+    try {
+      const profile = await fetchProfile(pubkeyHex);
+      if (profile) {
+        this.profile = profile;
+      }
+    } catch (err) {
+      console.error('Failed to load profile:', err);
+    }
   },
 
   async loadTodos() {
@@ -312,6 +366,99 @@ Alpine.store('app', {
       console.error('Failed to generate QR:', err);
       alert('Failed to generate QR code.');
     }
+  },
+
+  // ===========================================
+  // Key Teleport Methods
+  // ===========================================
+
+  async setupKeyTeleport() {
+    try {
+      // Generate registration blob (creates instance key if needed)
+      const blob = await generateRegistrationBlob();
+
+      // Copy to clipboard
+      await navigator.clipboard.writeText(blob);
+
+      // Get instance npub for display
+      this.instanceNpub = await getInstanceNpub();
+
+      // Show confirmation modal
+      this.showTeleportSetupModal = true;
+    } catch (err) {
+      console.error('Key Teleport setup failed:', err);
+      this.loginError = 'Failed to generate teleport registration: ' + err.message;
+    }
+  },
+
+  async handleIncomingTeleport(blob) {
+    try {
+      // Decode and decrypt the blob
+      const { encryptedNsec, npub } = await decodeTeleportBlob(blob);
+
+      // Store pending teleport data
+      this.pendingTeleport = { encryptedNsec, npub };
+      this.teleportNpub = npub;
+      this.teleportUnlockCode = '';
+      this.teleportError = null;
+
+      // Show unlock modal
+      this.showTeleportUnlockModal = true;
+
+      // Try to auto-paste from clipboard
+      try {
+        const clipText = await navigator.clipboard.readText();
+        if (clipText && clipText.startsWith('nsec1')) {
+          this.teleportUnlockCode = clipText;
+        }
+      } catch {
+        // Clipboard access denied, user will paste manually
+      }
+    } catch (err) {
+      console.error('Key Teleport decode failed:', err);
+      this.loginError = err.message;
+    }
+  },
+
+  async completeTeleport() {
+    if (!this.pendingTeleport || !this.teleportUnlockCode) {
+      this.teleportError = 'Please enter the unlock code';
+      return;
+    }
+
+    this.isProcessingTeleport = true;
+    this.teleportError = null;
+
+    try {
+      // Decrypt the user's nsec
+      const nsec = await decryptWithUnlockCode(
+        this.pendingTeleport.encryptedNsec,
+        this.pendingTeleport.npub,
+        this.teleportUnlockCode
+      );
+
+      // Close modal
+      this.showTeleportUnlockModal = false;
+
+      // Login with the decrypted nsec (uses existing 'secret' flow)
+      await this.login('secret', nsec);
+
+      // Clear sensitive data
+      this.pendingTeleport = null;
+      this.teleportUnlockCode = '';
+    } catch (err) {
+      console.error('Key Teleport unlock failed:', err);
+      this.teleportError = err.message;
+    } finally {
+      this.isProcessingTeleport = false;
+    }
+  },
+
+  cancelTeleport() {
+    this.showTeleportUnlockModal = false;
+    this.pendingTeleport = null;
+    this.teleportUnlockCode = '';
+    this.teleportError = null;
   },
 });
 

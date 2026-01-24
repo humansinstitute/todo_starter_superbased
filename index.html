@@ -30,13 +30,22 @@
           @click="$store.app.showAvatarMenu = !$store.app.showAvatarMenu"
           title="Account menu"
         >
-          <span class="avatar-fallback" x-text="$store.app.avatarFallback"></span>
+          <img
+            x-show="$store.app.avatarUrl"
+            :src="$store.app.avatarUrl"
+            alt="Avatar"
+            @error="$store.app.profile && ($store.app.profile.picture = null)"
+          />
+          <span class="avatar-fallback" x-show="!$store.app.avatarUrl" x-text="$store.app.avatarFallback"></span>
         </button>
         <div
           class="avatar-menu"
           x-show="$store.app.showAvatarMenu"
           @click.outside="$store.app.showAvatarMenu = false"
         >
+          <div class="avatar-menu-header">
+            <span class="avatar-menu-name" x-text="$store.app.displayName"></span>
+          </div>
           <button type="button" @click="$store.app.copyId()">Copy ID</button>
           <button
             type="button"
@@ -73,6 +82,11 @@
           :disabled="$store.app.isLoggingIn"
           @click="$store.app.login('extension')"
         >Browser Extension</button>
+        <button
+          class="auth-option auth-keyteleport"
+          type="button"
+          @click="$store.app.setupKeyTeleport()"
+        >Key Teleport</button>
       </div>
       <details class="auth-advanced">
         <summary>Advanced options</summary>
@@ -291,6 +305,65 @@
         <h2>Login QR Code</h2>
         <p>Scan this code with your mobile device to log in</p>
         <div class="qr-canvas-container" data-qr-container></div>
+      </div>
+    </div>
+
+    <!-- Key Teleport Setup Modal -->
+    <div
+      class="modal-overlay"
+      x-show="$store.app.showTeleportSetupModal"
+      @click.self="$store.app.showTeleportSetupModal = false"
+      @keydown.escape.window="$store.app.showTeleportSetupModal = false"
+    >
+      <div class="modal teleport-modal">
+        <button class="modal-close" type="button" @click="$store.app.showTeleportSetupModal = false">&times;</button>
+        <h2>Key Teleport Setup</h2>
+        <p>Registration blob copied to clipboard!</p>
+        <p class="hint">Paste this into your key manager (e.g., Welcome) to register this app.</p>
+        <div class="teleport-npub">
+          <label>This app's identity:</label>
+          <code x-text="$store.app.instanceNpub"></code>
+        </div>
+        <button
+          class="auth-option"
+          type="button"
+          @click="$store.app.showTeleportSetupModal = false"
+        >Done</button>
+      </div>
+    </div>
+
+    <!-- Key Teleport Unlock Modal -->
+    <div
+      class="modal-overlay"
+      x-show="$store.app.showTeleportUnlockModal"
+      @keydown.escape.window="$store.app.cancelTeleport()"
+    >
+      <div class="modal teleport-modal">
+        <button class="modal-close" type="button" @click="$store.app.cancelTeleport()">&times;</button>
+        <h2>Key Teleport</h2>
+        <p>Importing identity:</p>
+        <code class="teleport-identity" x-text="$store.app.teleportNpub"></code>
+        <form class="auth-form" @submit.prevent="$store.app.completeTeleport()">
+          <label>
+            Paste unlock code from clipboard:
+            <input
+              type="password"
+              x-model="$store.app.teleportUnlockCode"
+              placeholder="nsec1..."
+              autocomplete="off"
+              autofocus
+            />
+          </label>
+          <p class="hint">The code was copied when you clicked "Teleport"</p>
+          <p class="auth-error" x-show="$store.app.teleportError" x-text="$store.app.teleportError"></p>
+          <div class="teleport-actions">
+            <button class="auth-option secondary" type="button" @click="$store.app.cancelTeleport()">Cancel</button>
+            <button class="auth-option" type="submit" :disabled="$store.app.isProcessingTeleport">
+              <span x-show="!$store.app.isProcessingTeleport">Unlock</span>
+              <span x-show="$store.app.isProcessingTeleport">Unlocking...</span>
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </main>
