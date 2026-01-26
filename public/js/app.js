@@ -96,6 +96,7 @@ Alpine.store('app', {
   superbasedBackgroundSyncing: false, // Background sync in progress
   superbasedSyncInterval: null, // Interval ID for periodic sync
   superbasedLastBackgroundSync: null, // Timestamp of last background sync
+  superbasedChangeDebounce: null, // Debounce timer for change sync
 
   // New todo input
   newTodoTitle: '',
@@ -290,21 +291,25 @@ Alpine.store('app', {
 
     this.newTodoTitle = '';
     await this.loadTodos();
+    this.syncAfterChange();
   },
 
   async updateTodoField(id, field, value) {
     await updateTodo(id, { [field]: value });
     await this.loadTodos();
+    this.syncAfterChange();
   },
 
   async transitionState(id, newState) {
     await transitionTodoState(id, newState);
     await this.loadTodos();
+    this.syncAfterChange();
   },
 
   async deleteTodoItem(id) {
     await deleteTodo(id);
     await this.loadTodos();
+    this.syncAfterChange();
   },
 
   toggleTag(tag) {
@@ -713,6 +718,51 @@ Alpine.store('app', {
     this.startBackgroundSync();
   },
 
+  // Trigger sync after a local change (debounced to batch rapid changes)
+  syncAfterChange() {
+    // Skip if no token configured
+    if (!this.superbasedConfig) return;
+
+    // Clear existing debounce timer
+    if (this.superbasedChangeDebounce) {
+      clearTimeout(this.superbasedChangeDebounce);
+    }
+
+    // Debounce: wait 2 seconds after last change before syncing
+    this.superbasedChangeDebounce = setTimeout(() => {
+      this.superbasedChangeDebounce = null;
+      this.uploadChanges();
+    }, 2000);
+  },
+
+  // Upload-only sync (doesn't download, for quick change sync)
+  async uploadChanges() {
+    if (!this.superbasedConfig || !this.session?.npub) return;
+    if (this.superbasedBackgroundSyncing) return;
+    if (this.superbasedSyncStatus) return; // Manual sync in progress
+
+    console.log('SuperBased: uploading changes');
+
+    try {
+      const token = loadToken();
+      if (!token) return;
+
+      const client = new SuperBasedClient(token);
+      await client.connect();
+
+      const records = await formatForSync(this.session.npub);
+      if (records.length > 0) {
+        await client.syncRecords(records);
+        console.log('SuperBased: uploaded', records.length, 'records');
+      }
+
+      setLastSyncTime(this.session.npub, new Date().toISOString());
+      await client.disconnect();
+    } catch (err) {
+      console.error('SuperBased: upload failed:', err.message);
+    }
+  },
+
   // Initialize background sync from saved token (called on app startup)
   initBackgroundSync() {
     const savedToken = loadToken();
@@ -844,6 +894,7 @@ Alpine.data('todoItem', (todo) => ({
       const details = this.$el.querySelector('details');
       if (details) details.open = false;
       await store.loadTodos();
+      store.syncAfterChange();
     } catch (err) {
       console.error('Failed to save todo:', err);
       alert('Failed to save: ' + err.message);
