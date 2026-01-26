@@ -37,12 +37,14 @@ import {
 } from './keyteleport.js';
 import {
   SuperBasedClient,
+  SyncNotifier,
   parseToken,
   verifyToken,
   saveToken,
   loadToken,
   clearToken,
   truncateNpub,
+  getDeviceId,
 } from './superbased.js';
 import {
   formatForSync,
@@ -94,7 +96,7 @@ Alpine.store('app', {
   superbasedConflicts: [], // Array of conflict objects for user resolution
   superbasedHasToken: false, // Whether a token is saved
   superbasedBackgroundSyncing: false, // Background sync in progress
-  superbasedSyncInterval: null, // Interval ID for periodic sync
+  superbasedSyncNotifier: null, // SyncNotifier instance for event-based sync
   superbasedLastBackgroundSync: null, // Timestamp of last background sync
   superbasedChangeDebounce: null, // Debounce timer for change sync
 
@@ -754,6 +756,11 @@ Alpine.store('app', {
       if (records.length > 0) {
         await client.syncRecords(records);
         console.log('SuperBased: uploaded', records.length, 'records');
+
+        // Publish notification to other devices
+        if (this.superbasedSyncNotifier) {
+          await this.superbasedSyncNotifier.publish();
+        }
       }
 
       setLastSyncTime(this.session.npub, new Date().toISOString());
@@ -819,33 +826,44 @@ Alpine.store('app', {
     }
   },
 
-  // Start periodic background sync (every 30 seconds)
-  startBackgroundSync() {
-    if (this.superbasedSyncInterval) return;
+  // Start event-based background sync (subscribes to Nostr notifications)
+  async startBackgroundSync() {
+    if (this.superbasedSyncNotifier) return;
     if (!this.superbasedConfig) return;
 
-    console.log('SuperBased: starting periodic sync (30s interval)');
+    const token = loadToken();
+    if (!token) return;
 
-    // Initial sync after short delay
-    setTimeout(() => this.backgroundSync(), 2000);
+    try {
+      // Create and initialize sync notifier
+      this.superbasedSyncNotifier = new SyncNotifier(token);
+      await this.superbasedSyncNotifier.init();
 
-    // Set up interval
-    this.superbasedSyncInterval = setInterval(() => {
-      if (!document.hidden) {
+      // Subscribe to sync notifications from other devices
+      this.superbasedSyncNotifier.startSubscription((payload) => {
+        console.log('SuperBased: received sync notification from device:', payload.deviceId);
+        // Trigger background download when another device publishes
         this.backgroundSync();
-      }
-    }, 30000);
+      });
 
-    // Listen for visibility changes
-    document.addEventListener('visibilitychange', this._handleVisibilityChange);
+      console.log('SuperBased: started event-based sync subscription');
+
+      // Also sync when app becomes visible (in case we missed notifications)
+      document.addEventListener('visibilitychange', this._handleVisibilityChange);
+
+      // Initial sync after short delay
+      setTimeout(() => this.backgroundSync(), 2000);
+    } catch (err) {
+      console.error('SuperBased: failed to start sync notifier:', err.message);
+    }
   },
 
-  // Stop periodic background sync
+  // Stop event-based background sync
   stopBackgroundSync() {
-    if (this.superbasedSyncInterval) {
-      clearInterval(this.superbasedSyncInterval);
-      this.superbasedSyncInterval = null;
-      console.log('SuperBased: stopped periodic sync');
+    if (this.superbasedSyncNotifier) {
+      this.superbasedSyncNotifier.destroy();
+      this.superbasedSyncNotifier = null;
+      console.log('SuperBased: stopped sync subscription');
     }
     document.removeEventListener('visibilitychange', this._handleVisibilityChange);
   },

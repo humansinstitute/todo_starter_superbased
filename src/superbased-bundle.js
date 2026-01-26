@@ -7,8 +7,24 @@ import {
   PrivateKeySigner,
   ApplesauceRelayPool,
 } from '@contextvm/sdk';
-import { nip19, verifyEvent } from 'nostr-tools';
-import { bytesToHex } from '@noble/hashes/utils';
+import { nip19, verifyEvent, finalizeEvent, SimplePool } from 'nostr-tools';
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils';
+import { Observable, Subject, filter, map, takeUntil } from 'rxjs';
+import * as nip44 from 'nostr-tools/nip44';
+
+// Sync notification constants
+const SYNC_NOTIFY_KIND = 30080;
+const NOTIFICATION_RELAYS = [
+  'wss://relay.damus.io/',
+  'wss://nos.lol/',
+  'wss://nostr.mom/',
+  'wss://offchain.pub/',
+  'wss://relay.primal.net/',
+  'wss://nostr.wine/',
+  'wss://nostrelites.org/',
+  'wss://wot.nostr.party/',
+];
+const DEBOUNCE_MS = 5000; // 5 second debounce on publishing
 
 // Token parsing (matches test_client/src/token-parser.ts)
 function parseToken(tokenBase64) {
@@ -181,13 +197,260 @@ async function createClient(options) {
   };
 }
 
+// ============================================
+// Device ID Management
+// ============================================
+
+const DEVICE_ID_KEY = 'superbased_device_id';
+
+function getDeviceId() {
+  let deviceId = localStorage.getItem(DEVICE_ID_KEY);
+  if (!deviceId) {
+    deviceId = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_KEY, deviceId);
+    console.log('SyncNotifier: generated new deviceId:', deviceId);
+  }
+  return deviceId;
+}
+
+// ============================================
+// RxJS Subscription wrapper for SimplePool
+// ============================================
+
+function subscribeToRelays(pool, relays, nostrFilter) {
+  return new Observable((subscriber) => {
+    let sub = null;
+    try {
+      sub = pool.subscribeMany(relays, [nostrFilter], {
+        onevent(event) {
+          subscriber.next({ type: 'event', event });
+        },
+        oneose() {
+          subscriber.next({ type: 'eose' });
+        },
+        onclose(reasons) {
+          subscriber.next({ type: 'closed', reason: reasons?.join(', ') });
+        },
+      });
+    } catch (err) {
+      console.error('SyncNotifier: subscription failed:', err);
+      subscriber.next({ type: 'closed', reason: String(err) });
+    }
+
+    return () => {
+      if (sub) {
+        try {
+          sub.close();
+        } catch {}
+      }
+    };
+  });
+}
+
+function onlyEvents() {
+  return (source) =>
+    source.pipe(
+      filter((msg) => msg.type === 'event' && !!msg.event),
+      map((msg) => msg.event)
+    );
+}
+
+// ============================================
+// Sync Notifier - publishes and subscribes to sync events
+// ============================================
+
+class SyncNotifier {
+  constructor(options) {
+    this.userPubkeyHex = options.userPubkeyHex;
+    this.appNpub = options.appNpub;
+    this.privateKeyHex = options.privateKeyHex; // For signing and encryption
+    this.useExtension = options.useExtension;
+
+    this.deviceId = getDeviceId();
+    this.pool = new SimplePool();
+    this.stopSignal = new Subject();
+    this.subscription = null;
+    this.lastPublishTime = 0;
+    this.onSyncNeeded = null;
+
+    console.log('SyncNotifier: initialized with deviceId:', this.deviceId);
+  }
+
+  // Get conversation key for NIP-44 encryption (encrypt to self)
+  _getConversationKey() {
+    if (!this.privateKeyHex) {
+      throw new Error('Cannot encrypt without private key');
+    }
+    const privKeyBytes = hexToBytes(this.privateKeyHex);
+    const pubKeyBytes = hexToBytes(this.userPubkeyHex);
+    return nip44.v2.utils.getConversationKey(privKeyBytes, pubKeyBytes);
+  }
+
+  // Publish a sync notification
+  async publish() {
+    // Debounce check
+    const now = Date.now();
+    if (now - this.lastPublishTime < DEBOUNCE_MS) {
+      console.log('SyncNotifier: skipping publish (debounce)');
+      return false;
+    }
+    this.lastPublishTime = now;
+
+    try {
+      // Create payload
+      const payload = {
+        deviceId: this.deviceId,
+        appNpub: this.appNpub,
+        timestamp: now,
+      };
+
+      // Encrypt payload to user's pubkey
+      let encrypted;
+      if (this.useExtension && window.nostr?.nip44?.encrypt) {
+        encrypted = await window.nostr.nip44.encrypt(this.userPubkeyHex, JSON.stringify(payload));
+      } else if (this.privateKeyHex) {
+        const conversationKey = this._getConversationKey();
+        encrypted = nip44.v2.encrypt(JSON.stringify(payload), conversationKey);
+      } else {
+        throw new Error('No encryption method available');
+      }
+
+      // Create unsigned event
+      const unsignedEvent = {
+        kind: SYNC_NOTIFY_KIND,
+        created_at: Math.floor(now / 1000),
+        tags: [
+          ['p', this.userPubkeyHex],
+          ['d', this.appNpub], // d-tag for replaceable event
+        ],
+        content: encrypted,
+      };
+
+      // Sign event
+      let signedEvent;
+      if (this.useExtension && window.nostr?.signEvent) {
+        signedEvent = await window.nostr.signEvent(unsignedEvent);
+      } else if (this.privateKeyHex) {
+        const privKeyBytes = hexToBytes(this.privateKeyHex);
+        signedEvent = finalizeEvent(unsignedEvent, privKeyBytes);
+      } else {
+        throw new Error('No signing method available');
+      }
+
+      // Publish to relays
+      const results = await Promise.allSettled(
+        NOTIFICATION_RELAYS.map((relay) =>
+          Promise.race([
+            this.pool.publish([relay], signedEvent),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000)),
+          ])
+        )
+      );
+
+      const successes = results.filter((r) => r.status === 'fulfilled').length;
+      console.log(`SyncNotifier: published to ${successes}/${NOTIFICATION_RELAYS.length} relays`);
+
+      return successes > 0;
+    } catch (err) {
+      console.error('SyncNotifier: publish failed:', err);
+      return false;
+    }
+  }
+
+  // Subscribe to sync notifications
+  startSubscription(callback) {
+    if (this.subscription) {
+      console.log('SyncNotifier: already subscribed');
+      return;
+    }
+
+    this.onSyncNeeded = callback;
+
+    const nostrFilter = {
+      kinds: [SYNC_NOTIFY_KIND],
+      '#p': [this.userPubkeyHex],
+      since: Math.floor(Date.now() / 1000) - 300, // Last 5 minutes
+    };
+
+    console.log('SyncNotifier: starting subscription');
+
+    this.subscription = subscribeToRelays(this.pool, NOTIFICATION_RELAYS, nostrFilter)
+      .pipe(onlyEvents(), takeUntil(this.stopSignal))
+      .subscribe({
+        next: async (event) => {
+          try {
+            // Decrypt payload
+            let decrypted;
+            if (this.useExtension && window.nostr?.nip44?.decrypt) {
+              decrypted = await window.nostr.nip44.decrypt(event.pubkey, event.content);
+            } else if (this.privateKeyHex) {
+              const conversationKey = this._getConversationKey();
+              decrypted = nip44.v2.decrypt(event.content, conversationKey);
+            } else {
+              console.warn('SyncNotifier: cannot decrypt event');
+              return;
+            }
+
+            const payload = JSON.parse(decrypted);
+
+            // Skip our own notifications
+            if (payload.deviceId === this.deviceId) {
+              return;
+            }
+
+            // Skip if different app
+            if (payload.appNpub !== this.appNpub) {
+              return;
+            }
+
+            console.log('SyncNotifier: received sync notification from device:', payload.deviceId);
+
+            // Trigger callback
+            if (this.onSyncNeeded) {
+              this.onSyncNeeded(payload);
+            }
+          } catch (err) {
+            console.error('SyncNotifier: failed to process event:', err);
+          }
+        },
+        error: (err) => {
+          console.error('SyncNotifier: subscription error:', err);
+        },
+      });
+  }
+
+  // Stop subscription
+  stopSubscription() {
+    if (this.subscription) {
+      this.stopSignal.next();
+      this.subscription.unsubscribe();
+      this.subscription = null;
+      this.onSyncNeeded = null;
+      console.log('SyncNotifier: stopped subscription');
+    }
+  }
+
+  // Cleanup
+  destroy() {
+    this.stopSubscription();
+    this.pool.close(NOTIFICATION_RELAYS);
+  }
+}
+
+// Factory function for SyncNotifier
+function createSyncNotifier(options) {
+  return new SyncNotifier(options);
+}
+
 // Export to window
 window.SuperBasedSDK = {
   createClient,
+  createSyncNotifier,
   parseToken,
   verifyEvent,
   nip19,
   bytesToHex,
+  getDeviceId,
 };
 
 console.log('SuperBased SDK loaded');

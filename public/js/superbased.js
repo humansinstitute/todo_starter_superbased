@@ -1,7 +1,7 @@
 // SuperBased sync - thin wrapper around bundled SDK
 // Uses window.SuperBasedSDK.createClient factory
 
-import { getMemorySecret, bytesToHex } from './nostr.js';
+import { getMemorySecret, getMemoryPubkey, bytesToHex } from './nostr.js';
 
 const SUPERBASED_TOKEN_KEY = 'superbased_token';
 
@@ -10,6 +10,10 @@ function getSDK() {
     throw new Error('SuperBased SDK not loaded');
   }
   return window.SuperBasedSDK;
+}
+
+export function getDeviceId() {
+  return getSDK().getDeviceId();
 }
 
 export function parseToken(tokenBase64) {
@@ -121,4 +125,64 @@ export class SuperBasedClient {
 export function truncateNpub(npub) {
   if (!npub || npub.length < 20) return npub;
   return npub.slice(0, 12) + '...' + npub.slice(-8);
+}
+
+/**
+ * Sync Notifier wrapper - publishes and subscribes to sync events
+ */
+export class SyncNotifier {
+  constructor(token) {
+    this.config = parseToken(token);
+    this.notifier = null;
+  }
+
+  async init() {
+    const { createSyncNotifier, bytesToHex: sdkBytesToHex } = getSDK();
+
+    const memorySecret = getMemorySecret();
+    const memoryPubkey = getMemoryPubkey();
+
+    let options = {
+      appNpub: this.config.appNpub,
+    };
+
+    if (memorySecret && memoryPubkey) {
+      // Ephemeral or nsec user
+      options.privateKeyHex = sdkBytesToHex(memorySecret);
+      options.userPubkeyHex = memoryPubkey;
+      options.useExtension = false;
+    } else if (window.nostr) {
+      // Extension user
+      options.userPubkeyHex = await window.nostr.getPublicKey();
+      options.useExtension = true;
+    } else {
+      throw new Error('No signing method available');
+    }
+
+    this.notifier = createSyncNotifier(options);
+    console.log('SyncNotifier: initialized');
+  }
+
+  async publish() {
+    if (!this.notifier) throw new Error('Not initialized');
+    return this.notifier.publish();
+  }
+
+  startSubscription(callback) {
+    if (!this.notifier) throw new Error('Not initialized');
+    this.notifier.startSubscription(callback);
+  }
+
+  stopSubscription() {
+    if (this.notifier) {
+      this.notifier.stopSubscription();
+    }
+  }
+
+  destroy() {
+    if (this.notifier) {
+      this.notifier.destroy();
+      this.notifier = null;
+    }
+  }
 }
