@@ -864,8 +864,20 @@ Alpine.store('app', {
 
 // Todo item component
 Alpine.data('todoItem', (todo) => ({
+  todoId: todo.id,
   localTodo: { ...todo },
   tagInput: '',
+
+  init() {
+    // Watch for changes in the store's todos and sync localTodo
+    this.$watch('$store.app.todos', (todos) => {
+      const updated = todos.find(t => t.id === this.todoId);
+      if (updated) {
+        // Sync all fields from the updated todo
+        this.localTodo = { ...updated };
+      }
+    });
+  },
 
   get tagsArray() {
     return parseTags(this.localTodo.tags);
