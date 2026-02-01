@@ -312,27 +312,20 @@ class SyncNotifier {
 
     // Create RxJS Observable from relay pool subscription
     const eventObservable = new Observable((subscriber) => {
-      // ApplesauceRelayPool.subscribe returns a subscription handle
-      const subHandle = this.relayPool.subscribe(
+      // ApplesauceRelayPool.subscribe(filters, onEvent, onEose) - takes separate args, not object
+      this.relayPool.subscribe(
         [nostrFilter],
-        {
-          onEvent: (event) => {
-            subscriber.next(event);
-          },
-          onEose: () => {
-            console.log('SyncNotifier: received EOSE');
-          },
-          onClose: (reason) => {
-            console.log('SyncNotifier: subscription closed:', reason);
-          },
+        (event) => {
+          subscriber.next(event);
+        },
+        () => {
+          console.log('SyncNotifier: received EOSE');
         }
       );
 
-      // Cleanup on unsubscribe
+      // Cleanup on unsubscribe - call unsubscribe on the pool
       return () => {
-        if (subHandle && typeof subHandle.close === 'function') {
-          subHandle.close();
-        }
+        this.relayPool.unsubscribe();
       };
     });
 

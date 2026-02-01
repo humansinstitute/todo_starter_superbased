@@ -2,12 +2,21 @@
 import Dexie from 'https://esm.sh/dexie@4.0.10';
 import { encryptObject, decryptObject } from './nostr.js';
 
-const db = new Dexie('TodoApp');
+// Use new database name to avoid primary key migration issues
+// Old 'TodoApp' used auto-increment integers which caused sync collisions
+const db = new Dexie('TodoAppV2');
 
-// Schema: id and owner are plaintext for querying, payload is encrypted
+// Schema: id (UUID string) and owner are plaintext for querying, payload is encrypted
 db.version(1).stores({
-  todos: '++id, owner',
+  todos: 'id, owner',
 });
+
+// Generate a 16-character hex UUID
+function generateTodoId() {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
 
 // Fields that are stored encrypted in the payload
 const ENCRYPTED_FIELDS = ['title', 'description', 'priority', 'state', 'tags', 'scheduled_for', 'done', 'deleted', 'created_at'];
@@ -55,7 +64,10 @@ async function decryptTodos(encryptedTodos) {
 
 export async function createTodo({ title, description = '', priority = 'sand', owner, tags = '', scheduled_for = null }) {
   const now = new Date().toISOString();
+  const id = generateTodoId(); // Use UUID instead of auto-increment
+
   const todoData = {
+    id,
     title,
     description,
     priority,
@@ -70,7 +82,7 @@ export async function createTodo({ title, description = '', priority = 'sand', o
   };
 
   const encryptedTodo = await encryptTodo(todoData);
-  return db.todos.add(encryptedTodo);
+  return db.todos.put(encryptedTodo); // Use put() since we're providing the ID
 }
 
 export async function getTodosByOwner(owner, includeDeleted = false) {
@@ -164,7 +176,13 @@ export async function importEncryptedTodos(encryptedTodos) {
  */
 export async function formatForSync(owner) {
   const encryptedTodos = await db.todos.where('owner').equals(owner).toArray();
+  return formatEncryptedTodosForSync(encryptedTodos);
+}
 
+/**
+ * Format specific encrypted todos for SuperBased sync
+ */
+export function formatEncryptedTodosForSync(encryptedTodos) {
   return encryptedTodos.map(todo => ({
     record_id: `todo-${todo.id}`,
     collection: 'todos',
@@ -180,11 +198,21 @@ export async function formatForSync(owner) {
 }
 
 /**
+ * Format todos by ID for upload
+ */
+export async function formatTodosByIdForSync(ids) {
+  const todos = await db.todos.bulkGet(ids);
+  return formatEncryptedTodosForSync(todos.filter(Boolean));
+}
+
+/**
  * Parse SuperBased record back to local format
  */
 function parseRemoteRecord(record) {
   try {
+    console.log('parseRemoteRecord: record_id:', record.record_id, 'has encrypted_data:', !!record.encrypted_data);
     const data = JSON.parse(record.encrypted_data);
+    console.log('parseRemoteRecord: parsed data.id:', data.id);
     return {
       id: data.id,
       owner: data.owner,
@@ -193,8 +221,9 @@ function parseRemoteRecord(record) {
       record_id: record.record_id,
       updated_at: record.updated_at,
     };
-  } catch {
-    console.error('Failed to parse remote record:', record.record_id);
+  } catch (err) {
+    console.error('Failed to parse remote record:', record.record_id, err.message);
+    console.error('Record content:', JSON.stringify(record).slice(0, 200));
     return null;
   }
 }
@@ -213,8 +242,11 @@ function payloadsMatch(payload1, payload2) {
  * Returns { toImport, conflicts, skipped }
  */
 export async function mergeRemoteRecords(owner, remoteRecords) {
+  console.log('mergeRemoteRecords: received', remoteRecords?.length || 0, 'remote records');
+
   const localEncrypted = await db.todos.where('owner').equals(owner).toArray();
   const localDecrypted = await decryptTodos(localEncrypted);
+  console.log('mergeRemoteRecords: have', localDecrypted.length, 'local records');
 
   // Build lookup maps
   const localById = new Map();
@@ -265,10 +297,37 @@ export async function mergeRemoteRecords(owner, remoteRecords) {
     }
 
     // New record - import it
+    console.log('mergeRemoteRecords: new record', parsed.id, 'will import');
     toImport.push(parsed);
   }
 
-  return { toImport, conflicts, skipped };
+  // Find local record IDs that need to be pushed to cloud
+  // (either newer than cloud, or not in cloud at all)
+  const toUploadIds = [];
+  const remoteIds = new Set(remoteRecords.map(r => {
+    const parsed = parseRemoteRecord(r);
+    return parsed?.id;
+  }).filter(Boolean));
+
+  for (const local of localDecrypted) {
+    // Check if local record is missing from cloud entirely
+    if (!remoteIds.has(local.id)) {
+      toUploadIds.push(local.id);
+      console.log('mergeRemoteRecords: local record', local.id, 'missing from cloud, will upload');
+      continue;
+    }
+
+    // Check if local is newer (already in skipped with reason 'local_is_newer')
+    const skippedEntry = skipped.find(s => s.local?.id === local.id && s.reason === 'local_is_newer');
+    if (skippedEntry) {
+      toUploadIds.push(local.id);
+      console.log('mergeRemoteRecords: local record', local.id, 'is newer than cloud, will upload');
+    }
+  }
+
+  console.log('mergeRemoteRecords: toImport:', toImport.length, 'toUploadIds:', toUploadIds.length, 'skipped:', skipped.length);
+
+  return { toImport, toUploadIds, conflicts, skipped };
 }
 
 /**

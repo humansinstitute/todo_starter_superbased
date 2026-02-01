@@ -2,8 +2,11 @@
 // Uses window.SuperBasedSDK.createClient factory
 
 import { getMemorySecret, getMemoryPubkey, bytesToHex } from './nostr.js';
-
-const SUPERBASED_TOKEN_KEY = 'superbased_token';
+import {
+  storeSuperbaedToken,
+  getStoredSuperbasedToken,
+  clearSuperbasedToken,
+} from './secure-store.js';
 
 function getSDK() {
   if (!window.SuperBasedSDK) {
@@ -29,16 +32,17 @@ export function verifyToken(tokenBase64) {
   }
 }
 
-export function saveToken(token) {
-  sessionStorage.setItem(SUPERBASED_TOKEN_KEY, token);
+// Secure token storage (encrypted in IndexedDB)
+export async function saveToken(token) {
+  await storeSuperbaedToken(token);
 }
 
-export function loadToken() {
-  return sessionStorage.getItem(SUPERBASED_TOKEN_KEY);
+export async function loadToken() {
+  return getStoredSuperbasedToken();
 }
 
-export function clearToken() {
-  sessionStorage.removeItem(SUPERBASED_TOKEN_KEY);
+export async function clearToken() {
+  await clearSuperbasedToken();
 }
 
 /**

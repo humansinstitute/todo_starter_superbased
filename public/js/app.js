@@ -48,10 +48,12 @@ import {
 } from './superbased.js';
 import {
   formatForSync,
+  formatTodosByIdForSync,
   mergeRemoteRecords,
   importParsedRecords,
   forceImportRecord,
   setLastSyncTime,
+  getLastSyncTime,
 } from './db.js';
 
 // Make Alpine available globally for debugging
@@ -99,6 +101,7 @@ Alpine.store('app', {
   superbasedSyncNotifier: null, // SyncNotifier instance for event-based sync
   superbasedLastBackgroundSync: null, // Timestamp of last background sync
   superbasedChangeDebounce: null, // Debounce timer for change sync
+  superbasedPollInterval: null, // 1s polling interval as fallback
 
   // New todo input
   newTodoTitle: '',
@@ -509,14 +512,14 @@ Alpine.store('app', {
   // SuperBased Sync Methods
   // ===========================================
 
-  openSuperBasedModal() {
+  async openSuperBasedModal() {
     this.showAvatarMenu = false;
     this.superbasedError = null;
     this.superbasedSyncStatus = null;
     this.superbasedConflicts = [];
 
-    // Check for saved token
-    const savedToken = loadToken();
+    // Check for saved token (encrypted in IndexedDB)
+    const savedToken = await loadToken();
     if (savedToken) {
       this.superbasedTokenInput = savedToken;
       this.superbasedHasToken = true;
@@ -538,7 +541,8 @@ Alpine.store('app', {
   closeSuperBasedModal() {
     this.showSuperBasedModal = false;
     this.superbasedTokenInput = '';
-    this.superbasedConfig = null;
+    // Don't clear superbasedConfig - keep it for background sync
+    // Only clear temporary modal state
     this.superbasedError = null;
     this.superbasedSyncStatus = null;
     this.superbasedConflicts = [];
@@ -570,18 +574,18 @@ Alpine.store('app', {
       }
 
       this.superbasedConfig = config;
-      saveToken(token);
+      await saveToken(token);
       this.superbasedHasToken = true;
     } catch (err) {
       this.superbasedError = err.message;
     }
   },
 
-  clearSuperbasedToken() {
+  async clearSuperbasedToken() {
     // Stop background sync when clearing token
     this.stopBackgroundSync();
 
-    clearToken();
+    await clearToken();
     this.superbasedTokenInput = '';
     this.superbasedConfig = null;
     this.superbasedHasToken = false;
@@ -596,7 +600,7 @@ Alpine.store('app', {
 
     try {
       // Create client and connect
-      const token = this.superbasedTokenInput.trim() || loadToken();
+      const token = this.superbasedTokenInput.trim() || await loadToken();
       this.superbasedClient = new SuperBasedClient(token);
       await this.superbasedClient.connect();
 
@@ -632,26 +636,35 @@ Alpine.store('app', {
   },
 
   async downloadFromSuperbased() {
-    if (!this.superbasedConfig || !this.session?.npub) return;
+    console.log('downloadFromSuperbased called, config:', !!this.superbasedConfig, 'session:', !!this.session?.npub);
+    if (!this.superbasedConfig || !this.session?.npub) {
+      console.log('downloadFromSuperbased: skipping, missing config or session');
+      return;
+    }
 
     this.superbasedError = null;
     this.superbasedSyncStatus = 'connecting';
 
     try {
       // Create client and connect
-      const token = this.superbasedTokenInput.trim() || loadToken();
+      const token = this.superbasedTokenInput.trim() || await loadToken();
       this.superbasedClient = new SuperBasedClient(token);
       await this.superbasedClient.connect();
 
       // Fetch records
       this.superbasedSyncStatus = 'downloading';
-      const { records } = await this.superbasedClient.fetchRecords({ collection: 'todos' });
+      console.log('downloadFromSuperbased: fetching records...');
+      const result = await this.superbasedClient.fetchRecords({ collection: 'todos' });
+      console.log('downloadFromSuperbased: fetch result:', result);
+      const records = result?.records;
 
       if (!records || records.length === 0) {
+        console.log('downloadFromSuperbased: no records found');
         this.superbasedError = 'No records found on server';
         this.superbasedSyncStatus = null;
         return;
       }
+      console.log('downloadFromSuperbased: got', records.length, 'records');
 
       // Merge with local data
       this.superbasedSyncStatus = 'merging';
@@ -734,12 +747,12 @@ Alpine.store('app', {
       clearTimeout(this.superbasedChangeDebounce);
     }
 
-    console.log('syncAfterChange: scheduling upload in 2s');
-    // Debounce: wait 2 seconds after last change before syncing
+    console.log('syncAfterChange: scheduling upload in 100ms');
+    // Debounce: wait 100ms after last change before syncing
     this.superbasedChangeDebounce = setTimeout(() => {
       this.superbasedChangeDebounce = null;
       this.uploadChanges();
-    }, 2000);
+    }, 100);
   },
 
   // Upload-only sync (doesn't download, for quick change sync)
@@ -761,7 +774,7 @@ Alpine.store('app', {
     console.log('SuperBased: uploading changes');
 
     try {
-      const token = loadToken();
+      const token = await loadToken();
       if (!token) return;
 
       const client = new SuperBasedClient(token);
@@ -790,8 +803,8 @@ Alpine.store('app', {
   },
 
   // Initialize background sync from saved token (called on app startup)
-  initBackgroundSync() {
-    const savedToken = loadToken();
+  async initBackgroundSync() {
+    const savedToken = await loadToken();
     if (!savedToken) return;
 
     try {
@@ -801,41 +814,67 @@ Alpine.store('app', {
       this.startBackgroundSync();
     } catch (err) {
       console.error('SuperBased: invalid saved token:', err.message);
-      clearToken();
+      await clearToken();
     }
   },
 
   // Background sync - download only, updates local with newer cloud records
-  async backgroundSync() {
+  // Uses incremental sync with `since` parameter for efficiency
+  async backgroundSync(fullSync = false) {
     // Skip if not configured or already syncing
     if (!this.superbasedConfig || !this.session?.npub) return;
     if (this.superbasedBackgroundSyncing) return;
     if (this.superbasedSyncStatus) return; // Manual sync in progress
 
     this.superbasedBackgroundSyncing = true;
-    console.log('SuperBased: background download starting');
 
     try {
-      const token = loadToken();
+      const token = await loadToken();
       if (!token) return;
 
       const client = new SuperBasedClient(token);
       await client.connect();
 
+      // Use incremental sync - only fetch records updated since last sync
+      const lastSync = fullSync ? null : getLastSyncTime(this.session.npub);
+      console.log('SuperBased: background download starting', lastSync ? `(since ${lastSync})` : '(full sync)');
+
       // Download remote changes only - cloud overwrites local if newer
-      const { records: remoteRecords } = await client.fetchRecords({ collection: 'todos' });
+      const { records: remoteRecords } = await client.fetchRecords({
+        collection: 'todos',
+        since: lastSync || undefined,
+      });
+
+      console.log('SuperBased: fetched', remoteRecords?.length || 0, 'records from cloud');
+
       if (remoteRecords && remoteRecords.length > 0) {
-        const { toImport, skipped } = await mergeRemoteRecords(this.session.npub, remoteRecords);
+        const { toImport, toUploadIds, skipped } = await mergeRemoteRecords(this.session.npub, remoteRecords);
+
+        // Import newer records from cloud
         if (toImport.length > 0) {
           await importParsedRecords(toImport);
           await this.loadTodos();
           console.log('SuperBased: imported', toImport.length, 'newer records from cloud');
         }
+
+        // Upload local records that are newer or missing from cloud
+        if (toUploadIds.length > 0) {
+          const recordsToUpload = await formatTodosByIdForSync(toUploadIds);
+          if (recordsToUpload.length > 0) {
+            await client.syncRecords(recordsToUpload);
+            console.log('SuperBased: uploaded', recordsToUpload.length, 'newer local records to cloud');
+
+            // Notify other devices about our upload
+            if (this.superbasedSyncNotifier) {
+              await this.superbasedSyncNotifier.publish();
+            }
+          }
+        }
       }
 
       setLastSyncTime(this.session.npub, new Date().toISOString());
       this.superbasedLastBackgroundSync = Date.now();
-      console.log('SuperBased: background download complete');
+      console.log('SuperBased: background sync complete');
 
       await client.disconnect();
     } catch (err) {
@@ -850,7 +889,7 @@ Alpine.store('app', {
     if (this.superbasedSyncNotifier) return;
     if (!this.superbasedConfig) return;
 
-    const token = loadToken();
+    const token = await loadToken();
     if (!token) return;
 
     try {
@@ -870,10 +909,36 @@ Alpine.store('app', {
       // Also sync when app becomes visible (in case we missed notifications)
       document.addEventListener('visibilitychange', this._handleVisibilityChange);
 
+      // Start 1-second polling as fallback for missed notifications
+      this._startPolling();
+
       // Initial sync after short delay
       setTimeout(() => this.backgroundSync(), 2000);
     } catch (err) {
       console.error('SuperBased: failed to start sync notifier:', err.message);
+    }
+  },
+
+  // Start 1-second polling for missed notifications
+  _startPolling() {
+    if (this.superbasedPollInterval) return;
+
+    this.superbasedPollInterval = setInterval(() => {
+      // Only poll if app is visible and not already syncing
+      if (!document.hidden && !this.superbasedBackgroundSyncing) {
+        this.backgroundSync(); // Uses incremental sync (since last sync)
+      }
+    }, 1000);
+
+    console.log('SuperBased: started 1s polling fallback');
+  },
+
+  // Stop polling
+  _stopPolling() {
+    if (this.superbasedPollInterval) {
+      clearInterval(this.superbasedPollInterval);
+      this.superbasedPollInterval = null;
+      console.log('SuperBased: stopped polling');
     }
   },
 
@@ -884,15 +949,51 @@ Alpine.store('app', {
       this.superbasedSyncNotifier = null;
       console.log('SuperBased: stopped sync subscription');
     }
+    this._stopPolling();
     document.removeEventListener('visibilitychange', this._handleVisibilityChange);
   },
 
   // Handle visibility change (sync when returning to app)
   _handleVisibilityChange() {
     const store = Alpine.store('app');
+    console.log('SuperBased: visibility changed, hidden:', document.hidden, 'config:', !!store.superbasedConfig);
     if (!document.hidden && store.superbasedConfig) {
-      console.log('SuperBased: app became visible, triggering sync');
-      store.backgroundSync();
+      console.log('SuperBased: app became visible, restarting subscription and doing full sync');
+      // Restart subscription (mobile browsers kill WebSockets when backgrounded)
+      store.restartBackgroundSync();
+      // Do full sync since we might have missed notifications while backgrounded
+      store.backgroundSync(true); // fullSync = true
+    }
+  },
+
+  // Restart the subscription (for when mobile browsers kill the connection)
+  async restartBackgroundSync() {
+    if (!this.superbasedConfig) return;
+
+    // Stop existing subscription if any
+    if (this.superbasedSyncNotifier) {
+      this.superbasedSyncNotifier.stopSubscription();
+    }
+
+    const token = await loadToken();
+    if (!token) return;
+
+    try {
+      // Recreate notifier if needed
+      if (!this.superbasedSyncNotifier) {
+        this.superbasedSyncNotifier = new SyncNotifier(token);
+        await this.superbasedSyncNotifier.init();
+      }
+
+      // Restart the subscription
+      this.superbasedSyncNotifier.startSubscription((payload) => {
+        console.log('SuperBased: received sync notification from device:', payload.deviceId);
+        this.backgroundSync();
+      });
+
+      console.log('SuperBased: restarted event-based sync subscription');
+    } catch (err) {
+      console.error('SuperBased: failed to restart sync:', err.message);
     }
   },
 
