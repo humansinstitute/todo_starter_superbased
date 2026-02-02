@@ -113,13 +113,16 @@ export class SuperBasedClient {
     if (!this.config.httpUrl) {
       throw new Error('Token missing HTTP URL');
     }
+
+    // Remove trailing slash from httpUrl to avoid double slashes
+    this.baseUrl = this.config.httpUrl.replace(/\/+$/, '');
   }
 
   /**
    * Make authenticated HTTP request
    */
   async request(path, method = 'GET', body = null) {
-    const url = `${this.config.httpUrl}${path}`;
+    const url = `${this.baseUrl}${path}`;
     const bodyStr = body ? JSON.stringify(body) : null;
 
     const auth = await createNip98Auth(url, method, bodyStr);
