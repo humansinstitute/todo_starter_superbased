@@ -146,6 +146,11 @@ Alpine.store('app', {
 
   // Actions
   async init() {
+    // Debug: check raw IndexedDB contents at startup
+    const { db } = await import('./db.js');
+    const allTodos = await db.todos.toArray();
+    console.log('INIT: IndexedDB contains', allTodos.length, 'raw todos:', allTodos);
+
     // Check for Key Teleport first (highest priority)
     const teleportBlob = checkForTeleportInUrl();
     if (teleportBlob) {
@@ -260,7 +265,10 @@ Alpine.store('app', {
 
   async loadTodos() {
     if (!this.session?.npub) return;
+
+    console.log('loadTodos: Querying for owner:', this.session.npub);
     this.todos = await getTodosByOwner(this.session.npub);
+    console.log('loadTodos: Found', this.todos.length, 'todos');
 
     // Check SuperBased connection after todos are loaded
     if (!this.superbasedClient) {

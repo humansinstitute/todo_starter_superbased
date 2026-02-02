@@ -277,23 +277,42 @@ export async function performSync(client, ownerNpub, lastSyncTime = null) {
   if (remoteData.records && remoteData.records.length > 0) {
     const todosToUpsert = [];
 
+    console.log('SuperBased: Processing', remoteData.records.length, 'remote records');
+
     for (const record of remoteData.records) {
+      console.log('SuperBased: Record:', record.record_id, 'metadata:', record.metadata);
+
       // Extract local ID from record_id (todo_123 -> 123)
       const match = record.record_id.match(/^todo_(\d+)$/);
       if (match) {
         const localId = parseInt(match[1], 10);
+        const owner = record.metadata?.owner || ownerNpub;
+
+        console.log('SuperBased: Will write todo', localId, 'with owner', owner);
+
         todosToUpsert.push({
           id: localId,
-          owner: record.metadata?.owner || ownerNpub,
+          owner: owner,
           payload: record.encrypted_data,
         });
+      } else {
+        console.warn('SuperBased: record_id did not match pattern:', record.record_id);
       }
     }
 
-    // Batch upsert - much faster than individual puts
+    // Batch upsert
     if (todosToUpsert.length > 0) {
-      await db.todos.bulkPut(todosToUpsert);
-      console.log('SuperBased: Batch imported', todosToUpsert.length, 'todos');
+      console.log('SuperBased: Writing to IndexedDB:', todosToUpsert);
+      try {
+        await db.todos.bulkPut(todosToUpsert);
+        console.log('SuperBased: Successfully wrote', todosToUpsert.length, 'todos to IndexedDB');
+
+        // Verify write
+        const verification = await db.todos.toArray();
+        console.log('SuperBased: IndexedDB now contains', verification.length, 'todos:', verification);
+      } catch (err) {
+        console.error('SuperBased: FAILED to write to IndexedDB:', err);
+      }
     }
   }
 
