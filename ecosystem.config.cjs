@@ -3,21 +3,22 @@
 module.exports = {
   "apps": [
     {
-      "name": "honest-ivory-thicket-app-super-based-todo",
+      "name": "honest-ivory-thicket-app-flux-do",
+      "namespace": "wingman-apps",
       "script": "bash",
       "args": [
         "-c",
-        "PORT=41000 bunx vite --host"
+        "PORT=41001 bunx vite"
       ],
-      "cwd": "/Users/mini/code/todo-starter",
+      "cwd": "/Users/mini/code/superbased/todo-flux",
       "env": {
-        "APP_ID": "8287d962-479d-4f35-aa5e-1a35ced77041",
-        "APP_LABEL": "Super Based Todo",
+        "APP_ID": "ac7df78c-bdb5-40a2-8224-c7931f2993b4",
+        "APP_LABEL": "Flux Do",
         "USER_ALIAS": "honest-ivory-thicket",
-        "PORT": "41000"
+        "PORT": "41001"
       },
-      "out_file": "/Users/mini/code/todo-starter/apps/logs/honest-ivory-thicket-app-super-based-todo-out.log",
-      "error_file": "/Users/mini/code/todo-starter/apps/logs/honest-ivory-thicket-app-super-based-todo-error.log",
+      "out_file": "/Users/mini/code/superbased/todo-flux/apps/logs/honest-ivory-thicket-app-flux-do-out.log",
+      "error_file": "/Users/mini/code/superbased/todo-flux/apps/logs/honest-ivory-thicket-app-flux-do-error.log",
       "log_date_format": "YYYY-MM-DD HH:mm:ss",
       "merge_logs": true,
       "autorestart": false,

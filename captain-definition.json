@@ -1,4 +1,8 @@
 {
   "schemaVersion": 2,
-  "dockerfilePath": "./Dockerfile"
+  "dockerfileLines": [
+    "FROM nginx:alpine",
+    "COPY nginx.conf /etc/nginx/conf.d/default.conf",
+    "COPY dist /usr/share/nginx/html"
+  ]
 }

@@ -1,8 +1,20 @@
 // SuperBased Sync Client
 // Handles authenticated sync with flux_adaptor server
 
-import { loadNostrLibs, getMemorySecret, getMemoryPubkey, bytesToHex, hexToBytes } from './nostr.js';
+import { loadNostrLibs, getMemorySecret, getMemoryPubkey, bytesToHex, hexToBytes, decryptObject } from './nostr.js';
 import { getEncryptedTodosByOwner, importEncryptedTodos, db } from './db.js';
+
+// Device ID for tracking sync origin
+const DEVICE_ID_KEY = 'superbased_device_id';
+
+function getDeviceId() {
+  let deviceId = localStorage.getItem(DEVICE_ID_KEY);
+  if (!deviceId) {
+    deviceId = crypto.randomUUID();
+    localStorage.setItem(DEVICE_ID_KEY, deviceId);
+  }
+  return deviceId;
+}
 
 /**
  * Parse a SuperBased token (base64-encoded Nostr event)
@@ -216,20 +228,38 @@ export class SuperBasedClient {
 /**
  * Convert local todos to sync format
  * Each todo becomes a record with encrypted_data being the payload
+ * Includes updated_at and device_id in metadata for conflict resolution
  */
 export async function todosToSyncRecords(ownerNpub) {
   // Get raw encrypted todos from DB
   const encryptedTodos = await getEncryptedTodosByOwner(ownerNpub);
+  const deviceId = getDeviceId();
 
-  return encryptedTodos.map(todo => ({
-    record_id: `todo_${todo.id}`,
-    collection: 'todos',
-    encrypted_data: todo.payload,
-    metadata: {
-      local_id: todo.id,
-      owner: todo.owner,
-    },
-  }));
+  // Decrypt each to get updated_at for metadata
+  const records = [];
+  for (const todo of encryptedTodos) {
+    let updatedAt = null;
+    try {
+      const decrypted = await decryptObject(todo.payload);
+      updatedAt = decrypted.updated_at || decrypted.created_at || new Date().toISOString();
+    } catch {
+      updatedAt = new Date().toISOString();
+    }
+
+    records.push({
+      record_id: `todo_${todo.id}`,
+      collection: 'todos',
+      encrypted_data: todo.payload,
+      metadata: {
+        local_id: todo.id,
+        owner: todo.owner,
+        updated_at: updatedAt,
+        device_id: deviceId,
+      },
+    });
+  }
+
+  return records;
 }
 
 /**
@@ -246,50 +276,144 @@ export function syncRecordsToTodos(records) {
 }
 
 /**
- * Perform full sync
- * 1. Push local changes to server
- * 2. Pull remote changes
- * 3. Merge into local DB (batched for performance)
+ * Perform full sync with pull-first strategy
+ *
+ * Strategy:
+ * - PULL FIRST to see what server has
+ * - Merge: take newer server versions into local
+ * - THEN PUSH only records where local is newer than server
+ * - This prevents stale local data from overwriting newer server data
+ *
+ * Flow:
+ * 1. Pull remote changes
+ * 2. Merge: update local if server has newer version
+ * 3. Push only records that are newer locally than what server has
  */
 export async function performSync(client, ownerNpub, lastSyncTime = null) {
-  // 1. Get local todos and push to server
-  const localRecords = await todosToSyncRecords(ownerNpub);
+  const deviceId = getDeviceId();
 
-  if (localRecords.length > 0) {
-    await client.syncRecords(localRecords);
-  }
-
-  // 2. Fetch ALL remote records (since filter doesn't work reliably)
+  // 1. PULL FIRST - Fetch all remote records
   const remoteData = await client.fetchRecords({});
 
-  // 3. Merge remote records into local DB
-  // ONLY add records that don't exist locally (never overwrite local changes)
-  let newRecordsAdded = 0;
-  if (remoteData.records && remoteData.records.length > 0) {
+  // Build a map of server records for comparison
+  const serverRecords = new Map();
+  if (remoteData.records) {
     for (const record of remoteData.records) {
-      const match = record.record_id.match(/^todo_(\d+)$/);
-      if (match) {
-        const localId = parseInt(match[1], 10);
+      serverRecords.set(record.record_id, record);
+    }
+  }
 
-        // Check if this record exists locally
-        const existing = await db.todos.get(localId);
+  // 2. Merge remote records into local DB
+  let newRecordsAdded = 0;
+  let recordsUpdated = 0;
 
-        // Only add if it doesn't exist locally (don't overwrite local changes)
-        if (!existing) {
-          await db.todos.put({
-            id: localId,
-            owner: record.metadata?.owner || ownerNpub,
-            payload: record.encrypted_data,
-          });
-          newRecordsAdded++;
+  for (const record of remoteData.records || []) {
+    const match = record.record_id.match(/^todo_(\d+)$/);
+    if (!match) continue;
+
+    const localId = parseInt(match[1], 10);
+    const serverUpdatedAt = record.updated_at;
+    const remoteDeviceId = record.metadata?.device_id;
+
+    const existing = await db.todos.get(localId);
+
+    if (!existing) {
+      // New record from server - add it
+      await db.todos.put({
+        id: localId,
+        owner: record.metadata?.owner || ownerNpub,
+        payload: record.encrypted_data,
+        server_updated_at: serverUpdatedAt,
+      });
+      newRecordsAdded++;
+      console.log(`Sync: Added new record ${localId} from server`);
+    } else {
+      // Record exists locally - compare server timestamps
+      const localServerTime = existing.server_updated_at
+        ? new Date(existing.server_updated_at).getTime()
+        : 0;
+      const remoteServerTime = serverUpdatedAt
+        ? new Date(serverUpdatedAt).getTime()
+        : 0;
+
+      // Skip if from same device (our own echo)
+      if (remoteDeviceId === deviceId) {
+        // Update server_updated_at to track sync
+        if (serverUpdatedAt && remoteServerTime > localServerTime) {
+          await db.todos.update(localId, { server_updated_at: serverUpdatedAt });
         }
+        continue;
+      }
+
+      // Take server version if it's newer
+      if (remoteServerTime > localServerTime) {
+        await db.todos.put({
+          id: localId,
+          owner: record.metadata?.owner || ownerNpub,
+          payload: record.encrypted_data,
+          server_updated_at: serverUpdatedAt,
+        });
+        recordsUpdated++;
+        console.log(`Sync: Updated record ${localId} (server newer: ${serverUpdatedAt} > ${existing.server_updated_at})`);
       }
     }
   }
 
+  // 3. PUSH only records that are newer locally
+  // Get all local records and filter to those that need pushing
+  const allLocalTodos = await getEncryptedTodosByOwner(ownerNpub);
+  const recordsToPush = [];
+
+  for (const todo of allLocalTodos) {
+    const recordId = `todo_${todo.id}`;
+    const serverRecord = serverRecords.get(recordId);
+
+    // Get local updated_at from decrypted payload
+    let localUpdatedAt = null;
+    try {
+      const decrypted = await decryptObject(todo.payload);
+      localUpdatedAt = decrypted.updated_at || decrypted.created_at;
+    } catch {
+      localUpdatedAt = new Date().toISOString();
+    }
+
+    const localTime = localUpdatedAt ? new Date(localUpdatedAt).getTime() : 0;
+    const serverTime = serverRecord?.updated_at
+      ? new Date(serverRecord.updated_at).getTime()
+      : 0;
+
+    // Push if:
+    // - Record doesn't exist on server, OR
+    // - Local client timestamp is newer than server timestamp (we made changes after last sync)
+    if (!serverRecord || localTime > serverTime) {
+      recordsToPush.push({
+        record_id: recordId,
+        collection: 'todos',
+        encrypted_data: todo.payload,
+        metadata: {
+          local_id: todo.id,
+          owner: todo.owner,
+          updated_at: localUpdatedAt,
+          device_id: deviceId,
+        },
+      });
+    }
+  }
+
+  let pushed = 0;
+  if (recordsToPush.length > 0) {
+    await client.syncRecords(recordsToPush);
+    pushed = recordsToPush.length;
+    console.log(`Sync: Pushed ${pushed} records to server`);
+
+    // Update server_updated_at for pushed records
+    // (They'll get the actual timestamp on next pull)
+  }
+
   return {
-    pushed: localRecords.length,
+    pushed,
     pulled: newRecordsAdded,
+    updated: recordsUpdated,
     syncTime: new Date().toISOString(),
   };
 }
