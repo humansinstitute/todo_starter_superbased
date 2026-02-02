@@ -150,10 +150,45 @@ export class SuperBasedClient {
   }
 
   /**
-   * Test connection / get whoami
+   * Test connection / get whoami (with timeout)
    */
   async whoami() {
-    return this.request('/auth/me');
+    return this.requestWithTimeout('/auth/me', 'GET', null, 10000);
+  }
+
+  /**
+   * Request with timeout wrapper
+   */
+  async requestWithTimeout(path, method = 'GET', body = null, timeoutMs = 30000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const url = `${this.baseUrl}${path}`;
+      const bodyStr = body ? JSON.stringify(body) : null;
+      const auth = await createNip98Auth(url, method, bodyStr);
+
+      const headers = { 'Authorization': auth };
+      if (bodyStr) {
+        headers['Content-Type'] = 'application/json';
+      }
+
+      const response = await fetch(url, {
+        method,
+        headers,
+        body: bodyStr,
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(error.error || `HTTP ${response.status}`);
+      }
+
+      return response.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**

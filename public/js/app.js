@@ -543,10 +543,13 @@ Alpine.store('app', {
       this.superbasedClient = client;
       this.superbasedConnected = true;
 
-      // Do initial sync
-      await this.syncNow();
-
+      // Close modal immediately, sync in background
       this.showSuperBasedModal = false;
+
+      // Do initial sync in background
+      this.syncNow().catch(err => {
+        console.error('Initial sync failed:', err);
+      });
     } catch (err) {
       console.error('SuperBased token error:', err);
       this.superbasedError = err.message || 'Failed to connect';
@@ -563,26 +566,36 @@ Alpine.store('app', {
       this.superbasedClient = client;
       console.log('SuperBased: Client initialized');
 
-      // Initialize SyncNotifier for real-time updates
+      // Initialize SyncNotifier in background (don't block connection)
       const config = parseToken(token);
       if (config.appNpub) {
-        this.syncNotifier = new SyncNotifier(config.appNpub);
-        await this.syncNotifier.init();
-
-        // Subscribe to notifications from other devices
-        this.syncNotifier.startSubscription(async (payload) => {
-          console.log('SuperBased: Received sync notification, fetching updates...');
-          // Pass skipNotify=true to avoid notification loop
-          await this.syncNow(true);
-        });
-
-        console.log('SuperBased: SyncNotifier ready');
+        this.initSyncNotifier(config.appNpub);
       }
     } catch (err) {
       console.error('SuperBased: Failed to initialize client:', err);
       this.superbasedClient = null;
       this.superbasedConnected = false;
       throw err;
+    }
+  },
+
+  // Initialize SyncNotifier in background
+  async initSyncNotifier(appNpub) {
+    try {
+      this.syncNotifier = new SyncNotifier(appNpub);
+      await this.syncNotifier.init();
+
+      // Subscribe to notifications from other devices
+      this.syncNotifier.startSubscription(async (payload) => {
+        console.log('SuperBased: Received sync notification, fetching updates...');
+        await this.syncNow(true);
+      });
+
+      console.log('SuperBased: SyncNotifier ready');
+    } catch (err) {
+      console.error('SuperBased: SyncNotifier failed (non-fatal):', err);
+      // Don't fail the connection, just disable real-time notifications
+      this.syncNotifier = null;
     }
   },
 
