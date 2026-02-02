@@ -41,6 +41,17 @@ import {
   performSync,
 } from './superbased.js';
 import { SyncNotifier } from './sync-notifier.js';
+import {
+  publishSuperBasedToken,
+  fetchSuperBasedTokenByApp,
+  fetchAllSuperBasedTokens,
+  deleteSuperBasedToken,
+} from './superbased-nostr.js';
+
+// Configure this per deployment - the expected app identity for token lookup
+// Set both to enable direct lookup, or leave null to fetch all and use if exactly 1
+const EXPECTED_APP_NPUB = null; // e.g., 'npub1abc...'
+const EXPECTED_BACKEND_URL = null; // e.g., 'https://superbasedtodo.ritoh.com'
 
 // Make Alpine available globally for debugging
 window.Alpine = Alpine;
@@ -539,10 +550,18 @@ Alpine.store('app', {
       const whoami = await client.whoami();
       console.log('SuperBased: Connected as', whoami.npub);
 
-      // Save token
+      // Save token locally
       localStorage.setItem('superbased_token', token);
       this.superbasedClient = client;
       this.superbasedConnected = true;
+
+      // Publish token to Nostr for cross-device sync (in background)
+      if (config.appNpub && config.httpUrl) {
+        publishSuperBasedToken(token, config.appNpub, config.httpUrl).catch(err => {
+          console.error('SuperBased: Failed to publish token to Nostr:', err);
+          // Non-fatal - local storage still works
+        });
+      }
 
       // Start auto-sync (polling + visibility)
       this.startAutoSync();
@@ -622,7 +641,7 @@ Alpine.store('app', {
     }
   },
 
-  async disconnectSuperBased() {
+  async disconnectSuperBased(deleteFromNostr = false) {
     // Stop auto-sync
     this.stopAutoSync();
 
@@ -630,6 +649,16 @@ Alpine.store('app', {
     if (this.syncNotifier) {
       this.syncNotifier.destroy();
       this.syncNotifier = null;
+    }
+
+    // Optionally delete from Nostr
+    if (deleteFromNostr && this.superbasedClient) {
+      const { appNpub, httpUrl } = this.superbasedClient.config || {};
+      if (appNpub && httpUrl) {
+        deleteSuperBasedToken(appNpub, httpUrl).catch(err => {
+          console.error('SuperBased: Failed to delete token from Nostr:', err);
+        });
+      }
     }
 
     localStorage.removeItem('superbased_token');
@@ -653,8 +682,8 @@ Alpine.store('app', {
       // Update last sync time for display
       this.lastSyncTime = new Date().toLocaleString();
 
-      // Only reload UI if we pulled new records (avoids unnecessary redraws)
-      if (result.pulled > 0) {
+      // Reload UI if we pulled new records or updated existing ones (avoids unnecessary redraws)
+      if (result.pulled > 0 || result.updated > 0) {
         this.todos = await getTodosByOwner(this.session.npub);
       }
 
@@ -673,7 +702,14 @@ Alpine.store('app', {
   },
 
   async checkSuperBasedConnection() {
-    const token = localStorage.getItem('superbased_token');
+    // First check localStorage for existing token
+    let token = localStorage.getItem('superbased_token');
+
+    // If no local token, try to fetch from Nostr
+    if (!token && this.session?.npub) {
+      token = await this.tryFetchTokenFromNostr();
+    }
+
     if (token && this.session?.npub) {
       try {
         const config = parseToken(token);
@@ -693,6 +729,46 @@ Alpine.store('app', {
         // Token might be invalid or server down - don't remove it, just mark disconnected
         this.superbasedConnected = false;
       }
+    }
+  },
+
+  async tryFetchTokenFromNostr() {
+    try {
+      // If we have a specific expected app identity, query for that directly
+      if (EXPECTED_APP_NPUB && EXPECTED_BACKEND_URL) {
+        console.log('SuperBased: Checking Nostr for token (app:', EXPECTED_APP_NPUB, ', URL:', EXPECTED_BACKEND_URL, ')');
+        const payload = await fetchSuperBasedTokenByApp(EXPECTED_APP_NPUB, EXPECTED_BACKEND_URL);
+        if (payload?.token) {
+          console.log('SuperBased: Found token on Nostr for this app');
+          // Save locally for future use
+          localStorage.setItem('superbased_token', payload.token);
+          return payload.token;
+        }
+        return null;
+      }
+
+      // No specific app configured - fetch all tokens and check count
+      console.log('SuperBased: Checking Nostr for any stored tokens');
+      const tokens = await fetchAllSuperBasedTokens();
+
+      if (tokens.length === 0) {
+        console.log('SuperBased: No tokens found on Nostr');
+        return null;
+      }
+
+      if (tokens.length === 1) {
+        console.log('SuperBased: Found exactly 1 token on Nostr, using it');
+        // Save locally for future use
+        localStorage.setItem('superbased_token', tokens[0].token);
+        return tokens[0].token;
+      }
+
+      // Multiple tokens found - can't auto-select
+      console.warn('SuperBased: Multiple tokens found on Nostr (' + tokens.length + '). Please add token manually.');
+      return null;
+    } catch (err) {
+      console.error('SuperBased: Failed to fetch token from Nostr:', err);
+      return null;
     }
   },
 });
