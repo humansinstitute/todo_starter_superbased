@@ -5,8 +5,17 @@
   "scripts": {
     "dev": "bunx vite",
     "build": "bunx vite build",
-    "preview": "bunx vite preview"
+    "preview": "bunx vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ui": "vitest --ui"
   },
   "type": "module",
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "dexie": "4.0.10",
+    "fake-indexeddb": "^6.0.0",
+    "happy-dom": "^15.0.0",
+    "vitest": "^2.0.0"
+  }
 }

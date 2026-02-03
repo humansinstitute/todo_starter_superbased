@@ -105,6 +105,11 @@ export async function updateTodo(id, updates) {
   const updated = { ...existing, ...updates, updated_at: now };
   const encryptedTodo = await encryptTodo(updated);
 
+  // Preserve server_updated_at from original record (sync metadata)
+  if (existingEncrypted.server_updated_at) {
+    encryptedTodo.server_updated_at = existingEncrypted.server_updated_at;
+  }
+
   return db.todos.put(encryptedTodo);
 }
 

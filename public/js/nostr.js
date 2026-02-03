@@ -271,10 +271,10 @@ export async function tryAutoLoginFromStorage() {
     }
 
     if (creds.method === 'extension') {
-      // Verify extension is available
-      if (!window.nostr?.getPublicKey) return null;
+      // Verify extension is available (just check existence, don't prompt)
+      if (!window.nostr) return null;
 
-      // Verify the stored auth event
+      // Verify the stored auth event exists
       if (!creds.authEvent) return null;
 
       // Check auth event is still valid (not too old)
@@ -285,17 +285,28 @@ export async function tryAutoLoginFromStorage() {
         return null;
       }
 
-      // Verify pubkey matches current extension
-      const currentPubkey = await window.nostr.getPublicKey();
-      if (currentPubkey !== creds.pubkey) {
+      // Verify the authEvent signature locally (no extension prompt!)
+      // This proves the user authenticated with this pubkey previously
+      const isValid = pure.verifyEvent(creds.authEvent);
+      if (!isValid) {
+        console.warn('Stored auth event signature invalid');
         await clearCredentials();
         return null;
       }
 
-      setMemoryPubkey(currentPubkey);
+      // Verify the auth event has our app tag
+      const appTag = creds.authEvent.tags.find(t => t[0] === 'app' && t[1] === APP_TAG);
+      if (!appTag) {
+        console.warn('Stored auth event missing app tag');
+        await clearCredentials();
+        return null;
+      }
+
+      // Trust the pubkey from the verified signed event
+      setMemoryPubkey(creds.pubkey);
       await refreshCredentialExpiry();
       return {
-        pubkey: currentPubkey,
+        pubkey: creds.pubkey,
         method: 'extension',
       };
     }
@@ -404,13 +415,18 @@ export async function encryptToSelf(plaintext) {
   const secret = getMemorySecret();
   const pubkey = getMemoryPubkey();
 
-  if (!secret || !pubkey) {
-    // For extension users, use NIP-07 nip44 methods
+  // For extension users (no secret, but pubkey set from auto-login)
+  if (!secret) {
     if (window.nostr?.nip44?.encrypt) {
-      const selfPubkey = await window.nostr.getPublicKey();
+      // Use memory pubkey if available, avoid getPublicKey() prompt
+      const selfPubkey = pubkey || await window.nostr.getPublicKey();
       return window.nostr.nip44.encrypt(selfPubkey, plaintext);
     }
     throw new Error('No encryption key available. Please log in first.');
+  }
+
+  if (!pubkey) {
+    throw new Error('No pubkey available. Please log in first.');
   }
 
   // Use nostr-tools nip44 for ephemeral/secret users
@@ -424,13 +440,18 @@ export async function decryptFromSelf(ciphertext) {
   const secret = getMemorySecret();
   const pubkey = getMemoryPubkey();
 
-  if (!secret || !pubkey) {
-    // For extension users, use NIP-07 nip44 methods
+  // For extension users (no secret, but pubkey set from auto-login)
+  if (!secret) {
     if (window.nostr?.nip44?.decrypt) {
-      const selfPubkey = await window.nostr.getPublicKey();
+      // Use memory pubkey if available, avoid getPublicKey() prompt
+      const selfPubkey = pubkey || await window.nostr.getPublicKey();
       return window.nostr.nip44.decrypt(selfPubkey, ciphertext);
     }
     throw new Error('No decryption key available. Please log in first.');
+  }
+
+  if (!pubkey) {
+    throw new Error('No pubkey available. Please log in first.');
   }
 
   // Use nostr-tools nip44 for ephemeral/secret users

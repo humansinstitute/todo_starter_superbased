@@ -69,8 +69,8 @@ export async function publishSuperBasedToken(token, appNpub, httpUrl) {
       content: encryptedContent,
     }, secret);
   } else if (window.nostr?.signEvent) {
-    // For extension users
-    const extPubkey = await window.nostr.getPublicKey();
+    // For extension users - use memory pubkey if available
+    const extPubkey = pubkey || await window.nostr.getPublicKey();
     const event = {
       kind: SUPERBASED_TOKEN_KIND,
       created_at: Math.floor(Date.now() / 1000),
@@ -238,7 +238,8 @@ export async function deleteSuperBasedToken(appNpub, httpUrl) {
       content: '',
     }, secret);
   } else if (window.nostr?.signEvent) {
-    const extPubkey = await window.nostr.getPublicKey();
+    // Use memory pubkey if available
+    const extPubkey = pubkey || await window.nostr.getPublicKey();
     const event = {
       kind: SUPERBASED_TOKEN_KIND,
       created_at: Math.floor(Date.now() / 1000),

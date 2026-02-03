@@ -777,6 +777,20 @@ Alpine.store('app', {
 Alpine.data('todoItem', (todo) => ({
   localTodo: { ...todo },
   tagInput: '',
+  _lastSyncedAt: todo.updated_at,
+
+  // Watch for external changes (sync) and refresh localTodo
+  init() {
+    this.$watch('$store.app.todos', () => {
+      // Find the current version of this todo in the store
+      const freshTodo = this.$store.app.todos.find(t => t.id === this.localTodo.id);
+      if (freshTodo && freshTodo.updated_at !== this._lastSyncedAt) {
+        // External update detected - refresh localTodo
+        this.localTodo = { ...freshTodo };
+        this._lastSyncedAt = freshTodo.updated_at;
+      }
+    });
+  },
 
   get tagsArray() {
     return parseTags(this.localTodo.tags);

@@ -48,11 +48,13 @@ export function parseToken(tokenBase64) {
 async function createNip98Auth(url, method, body = null) {
   const { pure, nip19 } = await loadNostrLibs();
   const secret = getMemorySecret();
+  const memPubkey = getMemoryPubkey();
 
   if (!secret) {
     // For extension users
     if (window.nostr?.signEvent) {
-      const pubkey = await window.nostr.getPublicKey();
+      // Use memory pubkey if available, avoid getPublicKey() prompt
+      const pubkey = memPubkey || await window.nostr.getPublicKey();
 
       const tags = [
         ['u', url],
@@ -328,7 +330,7 @@ export async function performSync(client, ownerNpub, lastSyncTime = null) {
       newRecordsAdded++;
       console.log(`Sync: Added new record ${localId} from server`);
     } else {
-      // Record exists locally - compare server timestamps
+      // Record exists locally - compare timestamps
       const localServerTime = existing.server_updated_at
         ? new Date(existing.server_updated_at).getTime()
         : 0;
@@ -345,8 +347,30 @@ export async function performSync(client, ownerNpub, lastSyncTime = null) {
         continue;
       }
 
-      // Take server version if it's newer
-      if (remoteServerTime > localServerTime) {
+      // Check if local has pending changes (edited since last sync)
+      // by comparing encrypted updated_at with server_updated_at
+      let localHasPendingChanges = false;
+      if (existing.payload) {
+        try {
+          const decrypted = await decryptObject(existing.payload);
+          const localUpdatedAt = decrypted.updated_at || decrypted.created_at;
+          if (localUpdatedAt) {
+            const localEditTime = new Date(localUpdatedAt).getTime();
+            // Local has pending changes if edited after last sync from server
+            localHasPendingChanges = localEditTime > localServerTime;
+          }
+        } catch (err) {
+          // Can't decrypt - assume we DO have pending changes (safer)
+          // This prevents accidental overwrites if extension decrypt fails
+          console.warn(`Sync: Can't decrypt local record ${localId}, assuming pending changes:`, err.message);
+          localHasPendingChanges = true;
+        }
+      }
+
+      // Take server version only if:
+      // 1. Server is newer than our last sync, AND
+      // 2. We don't have pending local changes
+      if (remoteServerTime > localServerTime && !localHasPendingChanges) {
         await db.todos.put({
           id: localId,
           owner: record.metadata?.owner || ownerNpub,
@@ -355,6 +379,8 @@ export async function performSync(client, ownerNpub, lastSyncTime = null) {
         });
         recordsUpdated++;
         console.log(`Sync: Updated record ${localId} (server newer: ${serverUpdatedAt} > ${existing.server_updated_at})`);
+      } else if (localHasPendingChanges) {
+        console.log(`Sync: Skipping server update for ${localId} - local has pending changes`);
       }
     }
   }

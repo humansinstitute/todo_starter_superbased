@@ -13,9 +13,38 @@ This is a **local-first, static-only** application. There is no backend server -
 - Run `bun dev` for Vite dev server with hot reload (uses bunx)
 - Run `bun build` to generate static files in `dist/`
 - The app can be deployed to any static host (Netlify, Vercel, GitHub Pages, etc.)
-- You should ensure logs are written to a file in <project_dir>/tmp/logs/...log that you can read directly in the project structure. 
+- You should ensure logs are written to a file in <project_dir>/tmp/logs/...log that you can read directly in the project structure.
 - You should flush this before we conduct a new test.
 - You should always read the logs when fixing bugs
+
+## Testing
+
+**IMPORTANT: Run integration tests before committing changes to sync, db, or encryption code.**
+
+```bash
+bun run test          # Run all tests once
+bun run test:watch    # Watch mode for development
+bun run test -- --reporter=verbose  # Detailed output
+```
+
+### Test Structure
+
+- `tests/setup.js` - Test environment (fake IndexedDB, mocks)
+- `tests/mock-superbased.js` - Mock SuperBased server for isolated testing
+- `tests/sync.test.js` - Integration tests for sync scenarios
+
+### Key Test Scenarios
+
+1. **Local edit preservation** - Verifies local edits aren't overwritten by stale server data
+2. **Remote change acceptance** - Verifies newer server changes are correctly merged
+3. **Push to server** - Verifies local changes are pushed
+4. **Bug regressions** - Tests for specific bugs we've fixed (server_updated_at preservation, decrypt failure handling)
+
+### When to Add Tests
+
+- When fixing sync-related bugs, add a regression test first
+- When adding new sync features, add tests for the happy path and edge cases
+- When modifying `db.js`, `superbased.js`, or encryption in `nostr.js`
 
 ## Key Files
 
@@ -48,6 +77,6 @@ This is a **local-first, static-only** application. There is no backend server -
 - Do not start servers yourself; the user manages them outside the agent
 - Always check for syntax errors before submitting changes
 - Ensure you always review links to images when presented in a prompt
-- Run lint before shipping: `bun run lint`
+- **Run tests before shipping: `bun run test`** (especially for sync/db/encryption changes)
 - Commit every change with a clear message so rollbacks stay easy
 - Make a note of current commit before starting and after a change has completed
