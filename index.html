@@ -480,17 +480,69 @@
         <button class="modal-close" type="button" @click="$store.app.showAgentConnectModal = false">&times;</button>
         <h2>Agent Connect</h2>
         <p>Connection details for AI agents to interact with your todos.</p>
+
         <div class="agent-connect-content">
+          <h3>Config</h3>
           <button
             class="copy-button"
             type="button"
             @click="$store.app.copyAgentConfig()"
             :class="{ 'copied': $store.app.agentConfigCopied }"
           >
-            <span x-show="!$store.app.agentConfigCopied">Copy to Clipboard</span>
+            <span x-show="!$store.app.agentConfigCopied">Copy Config</span>
             <span x-show="$store.app.agentConfigCopied">Copied!</span>
           </button>
           <pre class="agent-config-json"><code x-text="$store.app.agentConnectJson"></code></pre>
+        </div>
+
+        <div class="agent-api-docs">
+          <h3>API Documentation</h3>
+          <p class="api-note">Authorization header will be provided in your prompt. Base URL: <code>https://sb.otherstuff.studio</code></p>
+
+          <div class="api-section">
+            <h4>Read all todos</h4>
+            <pre class="api-example"><code>curl -H "Authorization: Bearer $TOKEN" \
+  "https://sb.otherstuff.studio/db/superbased_records?app_pubkey={superbasedAppKey}&collection=todos"</code></pre>
+          </div>
+
+          <div class="api-section">
+            <h4>Read todos for a specific user</h4>
+            <pre class="api-example"><code>curl -H "Authorization: Bearer $TOKEN" \
+  "https://sb.otherstuff.studio/db/superbased_records?app_pubkey={superbasedAppKey}&collection=todos&owner_pubkey={userKey}"</code></pre>
+          </div>
+
+          <div class="api-section">
+            <h4>Write a todo</h4>
+            <pre class="api-example"><code>curl -X POST \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "record_id": "todo_{uuid}",
+    "app_pubkey": "{superbasedAppKey}",
+    "owner_pubkey": "{userKey}",
+    "collection": "todos",
+    "encrypted_data": "{\"title\":\"...\",\"description\":\"...\",\"priority\":\"sand\",\"state\":\"new\",\"tags\":\"\",\"done\":0,\"deleted\":0,\"created_at\":\"ISO8601\",\"updated_at\":\"ISO8601\"}",
+    "metadata": {"local_id": "{uuid}", "owner": "{userNpub}"}
+  }' \
+  https://sb.otherstuff.studio/db/superbased_records</code></pre>
+          </div>
+
+          <div class="api-section">
+            <h4>Todo Schema</h4>
+            <pre class="api-example"><code>{
+  "title": "string (required)",
+  "description": "string",
+  "priority": "sand|stone|iron|gold",
+  "state": "new|doing|blocked|review|done",
+  "tags": "comma,separated,tags",
+  "scheduled_for": "ISO8601 or null",
+  "assigned_to": "hex_pubkey or null",
+  "done": 0|1,
+  "deleted": 0|1,
+  "created_at": "ISO8601",
+  "updated_at": "ISO8601"
+}</code></pre>
+          </div>
         </div>
       </div>
     </div>
