@@ -1,6 +1,5 @@
-// Dexie database for todos with NIP-44 encryption
+// Dexie database for todos (plaintext for workshop)
 import Dexie from 'https://esm.sh/dexie@4.0.10';
-import { encryptObject, decryptObject } from './nostr.js';
 
 // Use new database name to avoid primary key migration issues
 // Old 'TodoApp' used auto-increment integers which caused sync collisions
@@ -21,43 +20,41 @@ function generateTodoId() {
 // Fields that are stored encrypted in the payload
 const ENCRYPTED_FIELDS = ['title', 'description', 'priority', 'state', 'tags', 'scheduled_for', 'done', 'deleted', 'created_at', 'updated_at', 'assigned_to'];
 
-// Encrypt todo data before storage
-async function encryptTodo(todo) {
+// Serialize todo data before storage (plaintext for workshop)
+function serializeTodo(todo) {
   const { id, owner, ...sensitiveData } = todo;
-  const encryptedPayload = await encryptObject(sensitiveData);
-  return { id, owner, payload: encryptedPayload };
+  return { id, owner, payload: JSON.stringify(sensitiveData) };
 }
 
-// Decrypt todo data after retrieval
-async function decryptTodo(encryptedTodo) {
-  if (!encryptedTodo || !encryptedTodo.payload) {
-    return encryptedTodo;
+// Deserialize todo data after retrieval (plaintext for workshop)
+function deserializeTodo(storedTodo) {
+  if (!storedTodo || !storedTodo.payload) {
+    return storedTodo;
   }
   try {
-    const decryptedData = await decryptObject(encryptedTodo.payload);
-    return { id: encryptedTodo.id, owner: encryptedTodo.owner, ...decryptedData };
+    const data = JSON.parse(storedTodo.payload);
+    return { id: storedTodo.id, owner: storedTodo.owner, ...data };
   } catch (err) {
-    console.error('Failed to decrypt todo:', err);
-    // Return a placeholder if decryption fails
+    console.error('Failed to parse todo:', err);
     return {
-      id: encryptedTodo.id,
-      owner: encryptedTodo.owner,
-      title: '[Encrypted - unable to decrypt]',
+      id: storedTodo.id,
+      owner: storedTodo.owner,
+      title: '[Parse error]',
       description: '',
       priority: 'sand',
       state: 'new',
       tags: '',
       scheduled_for: null,
       done: 0,
-      deleted: 1, // Hide failed decryptions
+      deleted: 1,
       created_at: null,
     };
   }
 }
 
-// Decrypt multiple todos
-async function decryptTodos(encryptedTodos) {
-  return Promise.all(encryptedTodos.map(decryptTodo));
+// Deserialize multiple todos
+function deserializeTodos(storedTodos) {
+  return storedTodos.map(deserializeTodo);
 }
 
 // CRUD operations
@@ -82,29 +79,29 @@ export async function createTodo({ title, description = '', priority = 'sand', o
     updated_at: now,
   };
 
-  const encryptedTodo = await encryptTodo(todoData);
-  return db.todos.put(encryptedTodo); // Use put() since we're providing the ID
+  const serializedTodo = serializeTodo(todoData);
+  return db.todos.put(serializedTodo); // Use put() since we're providing the ID
 }
 
 export async function getTodosByOwner(owner, includeDeleted = false) {
-  const encryptedTodos = await db.todos.where('owner').equals(owner).toArray();
-  const todos = await decryptTodos(encryptedTodos);
+  const storedTodos = await db.todos.where('owner').equals(owner).toArray();
+  const todos = deserializeTodos(storedTodos);
   if (includeDeleted) return todos;
   return todos.filter(t => !t.deleted);
 }
 
 export async function getTodoById(id) {
-  const encryptedTodo = await db.todos.get(id);
-  if (!encryptedTodo) return null;
-  return decryptTodo(encryptedTodo);
+  const storedTodo = await db.todos.get(id);
+  if (!storedTodo) return null;
+  return deserializeTodo(storedTodo);
 }
 
 export async function updateTodo(id, updates) {
-  // Get existing todo, decrypt, merge updates, re-encrypt
-  const existingEncrypted = await db.todos.get(id);
-  if (!existingEncrypted) throw new Error('Todo not found');
+  // Get existing todo, deserialize, merge updates, re-serialize
+  const existingStored = await db.todos.get(id);
+  if (!existingStored) throw new Error('Todo not found');
 
-  const existing = await decryptTodo(existingEncrypted);
+  const existing = deserializeTodo(existingStored);
 
   // If state is being set to 'done', also set done flag
   if (updates.state === 'done') {
@@ -116,14 +113,14 @@ export async function updateTodo(id, updates) {
   // Always set updated_at on every change
   const now = new Date().toISOString();
   const updated = { ...existing, ...updates, updated_at: now };
-  const encryptedTodo = await encryptTodo(updated);
+  const serializedTodo = serializeTodo(updated);
 
   // Preserve server_updated_at from original record (sync metadata)
-  if (existingEncrypted.server_updated_at) {
-    encryptedTodo.server_updated_at = existingEncrypted.server_updated_at;
+  if (existingStored.server_updated_at) {
+    serializedTodo.server_updated_at = existingStored.server_updated_at;
   }
 
-  return db.todos.put(encryptedTodo);
+  return db.todos.put(serializedTodo);
 }
 
 export async function deleteTodo(id, hard = false) {
@@ -146,13 +143,13 @@ export async function transitionTodoState(id, newState) {
 
 // Bulk operations for future sync
 export async function bulkCreateTodos(todos) {
-  const encryptedTodos = await Promise.all(todos.map(encryptTodo));
-  return db.todos.bulkAdd(encryptedTodos);
+  const serializedTodos = todos.map(serializeTodo);
+  return db.todos.bulkAdd(serializedTodos);
 }
 
 export async function bulkUpdateTodos(todos) {
-  const encryptedTodos = await Promise.all(todos.map(encryptTodo));
-  return db.todos.bulkPut(encryptedTodos);
+  const serializedTodos = todos.map(serializeTodo);
+  return db.todos.bulkPut(serializedTodos);
 }
 
 export async function clearAllTodos(owner) {
@@ -249,8 +246,8 @@ function payloadsMatch(payload1, payload2) {
 export async function mergeRemoteRecords(owner, remoteRecords) {
   console.log('mergeRemoteRecords: received', remoteRecords?.length || 0, 'remote records');
 
-  const localEncrypted = await db.todos.where('owner').equals(owner).toArray();
-  const localDecrypted = await decryptTodos(localEncrypted);
+  const localStored = await db.todos.where('owner').equals(owner).toArray();
+  const localDecrypted = deserializeTodos(localStored);
   console.log('mergeRemoteRecords: have', localDecrypted.length, 'local records');
 
   // Build lookup maps
@@ -258,7 +255,7 @@ export async function mergeRemoteRecords(owner, remoteRecords) {
   const localByPayload = new Map();
   for (const todo of localDecrypted) {
     localById.set(todo.id, todo);
-    localByPayload.set(localEncrypted.find(e => e.id === todo.id)?.payload, todo);
+    localByPayload.set(localStored.find(e => e.id === todo.id)?.payload, todo);
   }
 
   const toImport = [];
