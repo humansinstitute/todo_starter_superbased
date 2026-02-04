@@ -28,6 +28,25 @@ function generateTodoId() {
 // Fields that are stored encrypted in the payload
 const ENCRYPTED_FIELDS = ['title', 'description', 'priority', 'state', 'tags', 'scheduled_for', 'done', 'deleted', 'created_at', 'updated_at', 'assigned_to'];
 
+/**
+ * Sanitize JSON string by escaping control characters
+ * Fixes common issues from improperly escaped agent-written data
+ */
+function sanitizeJsonString(str) {
+  if (!str || typeof str !== 'string') return str;
+
+  // Replace literal control characters with their escape sequences
+  return str
+    // Replace literal newlines with \n
+    .replace(/\r\n/g, '\\n')
+    .replace(/\r/g, '\\n')
+    .replace(/\n/g, '\\n')
+    // Replace literal tabs with \t
+    .replace(/\t/g, '\\t')
+    // Remove other control characters (0x00-0x1F except those we've handled)
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+}
+
 // Serialize todo data before storage (plaintext for workshop)
 function serializeTodo(todo) {
   const { id, owner, ...sensitiveData } = todo;
@@ -39,24 +58,36 @@ function deserializeTodo(storedTodo) {
   if (!storedTodo || !storedTodo.payload) {
     return storedTodo;
   }
+
+  let payload = storedTodo.payload;
+
+  // First try to parse as-is
   try {
-    const data = JSON.parse(storedTodo.payload);
+    const data = JSON.parse(payload);
     return { id: storedTodo.id, owner: storedTodo.owner, ...data };
-  } catch (err) {
-    console.error('Failed to parse todo:', err);
-    return {
-      id: storedTodo.id,
-      owner: storedTodo.owner,
-      title: '[Parse error]',
-      description: '',
-      priority: 'sand',
-      state: 'new',
-      tags: '',
-      scheduled_for: null,
-      done: 0,
-      deleted: 1,
-      created_at: null,
-    };
+  } catch (firstErr) {
+    // Try sanitizing the payload and parsing again
+    try {
+      const sanitized = sanitizeJsonString(payload);
+      const data = JSON.parse(sanitized);
+      console.log('Sanitized and parsed todo:', storedTodo.id);
+      return { id: storedTodo.id, owner: storedTodo.owner, ...data };
+    } catch (secondErr) {
+      console.error('Failed to parse todo even after sanitization:', storedTodo.id, secondErr.message);
+      return {
+        id: storedTodo.id,
+        owner: storedTodo.owner,
+        title: '[Parse error - invalid JSON]',
+        description: '',
+        priority: 'sand',
+        state: 'new',
+        tags: '',
+        scheduled_for: null,
+        done: 0,
+        deleted: 1,
+        created_at: null,
+      };
+    }
   }
 }
 

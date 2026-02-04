@@ -4,6 +4,20 @@
 import { loadNostrLibs, getMemorySecret, getMemoryPubkey, bytesToHex, hexToBytes } from './nostr.js';
 import { getEncryptedTodosByOwner, importEncryptedTodos, db } from './db.js';
 
+/**
+ * Sanitize JSON string by escaping control characters
+ * Fixes common issues from improperly escaped agent-written data
+ */
+function sanitizePayload(str) {
+  if (!str || typeof str !== 'string') return str;
+  return str
+    .replace(/\r\n/g, '\\n')
+    .replace(/\r/g, '\\n')
+    .replace(/\n/g, '\\n')
+    .replace(/\t/g, '\\t')
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '');
+}
+
 // Device ID for tracking sync origin
 const DEVICE_ID_KEY = 'superbased_device_id';
 
@@ -320,7 +334,7 @@ export function syncRecordsToTodos(records) {
   return records.map(record => ({
     id: record.metadata?.local_id,
     owner: record.metadata?.owner,
-    payload: record.encrypted_data,
+    payload: sanitizePayload(record.encrypted_data),
     _remote_id: record.record_id,
     _updated_at: record.updated_at,
   }));
@@ -374,7 +388,7 @@ export async function performSync(client, ownerNpub, lastSyncTime = null) {
       await db.todos.put({
         id: localId,
         owner: record.metadata?.owner || ownerNpub,
-        payload: record.encrypted_data,
+        payload: sanitizePayload(record.encrypted_data),
         server_updated_at: serverUpdatedAt,
       });
       newRecordsAdded++;
@@ -423,7 +437,7 @@ export async function performSync(client, ownerNpub, lastSyncTime = null) {
         await db.todos.put({
           id: localId,
           owner: record.metadata?.owner || ownerNpub,
-          payload: record.encrypted_data,
+          payload: sanitizePayload(record.encrypted_data),
           server_updated_at: serverUpdatedAt,
         });
         recordsUpdated++;
