@@ -40,7 +40,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ```bash
 curl -H "Authorization: Bearer $TOKEN" \
-  "https://sb.otherstuff.studio/db/superbased_records?app_pubkey={superbasedAppKey}&collection=todos&owner_pubkey={userKey}"
+  "https://sb.otherstuff.studio/db/superbased_records?app_pubkey={superbasedAppKey}&collection=todos&user_pubkey={userKey}"
 ```
 
 ### Read todos assigned to a user
@@ -63,7 +63,7 @@ curl -X POST \
   -d '{
     "record_id": "todo_{uuid}",
     "app_pubkey": "{superbasedAppKey}",
-    "owner_pubkey": "{userKey}",
+    "user_pubkey": "{userKey}",
     "collection": "todos",
     "encrypted_data": "{\"title\":\"My Task\",\"description\":\"\",\"priority\":\"sand\",\"state\":\"new\",\"tags\":\"\",\"scheduled_for\":null,\"assigned_to\":null,\"done\":0,\"deleted\":0,\"created_at\":\"2024-01-01T00:00:00.000Z\",\"updated_at\":\"2024-01-01T00:00:00.000Z\"}",
     "metadata": {
@@ -86,7 +86,7 @@ curl -X POST \
     {
       "record_id": "todo_{uuid1}",
       "app_pubkey": "{superbasedAppKey}",
-      "owner_pubkey": "{userKey}",
+      "user_pubkey": "{userKey}",
       "collection": "todos",
       "encrypted_data": "{...}",
       "metadata": {...}
@@ -94,7 +94,7 @@ curl -X POST \
     {
       "record_id": "todo_{uuid2}",
       "app_pubkey": "{superbasedAppKey}",
-      "owner_pubkey": "{userKey}",
+      "user_pubkey": "{userKey}",
       "collection": "todos",
       "encrypted_data": "{...}",
       "metadata": {...}
@@ -153,7 +153,7 @@ curl -X POST \
   -d "{
     \"record_id\": \"todo_${UUID}\",
     \"app_pubkey\": \"00bb00fc6b89b34e498922...\",
-    \"owner_pubkey\": \"934b9c5b...\",
+    \"user_pubkey\": \"934b9c5b...\",
     \"collection\": \"todos\",
     \"encrypted_data\": \"{\\\"title\\\":\\\"Buy groceries\\\",\\\"description\\\":\\\"Milk, eggs, bread\\\",\\\"priority\\\":\\\"stone\\\",\\\"state\\\":\\\"new\\\",\\\"tags\\\":\\\"shopping\\\",\\\"scheduled_for\\\":null,\\\"assigned_to\\\":null,\\\"done\\\":0,\\\"deleted\\\":0,\\\"created_at\\\":\\\"${NOW}\\\",\\\"updated_at\\\":\\\"${NOW}\\\"}\",
     \"metadata\": {
