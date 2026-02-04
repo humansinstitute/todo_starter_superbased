@@ -804,13 +804,8 @@ Alpine.store('app', {
   },
 
   async checkSuperBasedConnection() {
-    // First check localStorage for existing token
-    let token = localStorage.getItem('superbased_token');
-
-    // If no local token, try to fetch from Nostr
-    if (!token && this.session?.npub) {
-      token = await this.tryFetchTokenFromNostr();
-    }
+    // WORKSHOP MODE: Always use hardcoded token
+    let token = this.OTHERSTUFF_TOKEN;
 
     if (token && this.session?.npub) {
       try {

@@ -359,10 +359,11 @@ export async function performSync(client, ownerNpub, lastSyncTime = null) {
   let recordsUpdated = 0;
 
   for (const record of remoteData.records || []) {
-    const match = record.record_id.match(/^todo_(\d+)$/);
+    // Match both numeric IDs (legacy) and hex UUIDs
+    const match = record.record_id.match(/^todo_([a-f0-9]+)$/i);
     if (!match) continue;
 
-    const localId = parseInt(match[1], 10);
+    const localId = match[1]; // Keep as string (UUID)
     const serverUpdatedAt = record.updated_at;
     const remoteDeviceId = record.metadata?.device_id;
 
