@@ -1,8 +1,7 @@
 # dependencies
 node_modules/
 
-# package managers
-bun.lock
+# package managers (keep bun.lock for reproducible builds)
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
@@ -11,8 +10,7 @@ pnpm-lock.yaml
 *.log
 *.sqlite
 
-# build output
-dist/
+# build output (dist/ is committed for deployment)
 build/
 
 # environment files

@@ -17,6 +17,7 @@
   <meta name="apple-mobile-web-app-title" content="Based Todo" />
 
   <link rel="stylesheet" href="/css/app.css" />
+  <script type="module" crossorigin src="/assets/index-B5Qt9EMX.js"></script>
 </head>
 <body x-data x-cloak>
   <main class="app-shell">
@@ -26,14 +27,9 @@
       <div class="session-controls" x-show="$store.app.isLoggedIn">
         <button
           class="avatar-chip"
-          :class="{
-            'sync-status-synced': $store.app.syncStatus === 'synced',
-            'sync-status-unsynced': $store.app.syncStatus === 'unsynced',
-            'sync-status-syncing': $store.app.syncStatus === 'syncing'
-          }"
           type="button"
           @click="$store.app.showAvatarMenu = !$store.app.showAvatarMenu"
-          :title="$store.app.syncStatus === 'synced' ? 'Synced with SuperBased' : $store.app.syncStatus === 'unsynced' ? 'Local changes not synced' : $store.app.syncStatus === 'syncing' ? 'Syncing...' : 'Account menu'"
+          title="Account menu"
         >
           <img
             x-show="$store.app.avatarUrl"
@@ -437,8 +433,6 @@
     </div>
   </main>
 
-  <!-- SuperBased SDK (bundled npm packages) -->
-  <script type="module" src="/src/superbased-bundle.js"></script>
   <script type="module" src="/js/app.js"></script>
 
   <!-- Service Worker Registration -->

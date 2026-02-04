@@ -19,7 +19,7 @@ function generateTodoId() {
 }
 
 // Fields that are stored encrypted in the payload
-const ENCRYPTED_FIELDS = ['title', 'description', 'priority', 'state', 'tags', 'scheduled_for', 'done', 'deleted', 'created_at'];
+const ENCRYPTED_FIELDS = ['title', 'description', 'priority', 'state', 'tags', 'scheduled_for', 'done', 'deleted', 'created_at', 'updated_at'];
 
 // Encrypt todo data before storage
 async function encryptTodo(todo) {
@@ -112,11 +112,15 @@ export async function updateTodo(id, updates) {
     updates.done = 0;
   }
 
-  // Always update the timestamp
-  updates.updated_at = new Date().toISOString();
-
-  const updated = { ...existing, ...updates };
+  // Always set updated_at on every change
+  const now = new Date().toISOString();
+  const updated = { ...existing, ...updates, updated_at: now };
   const encryptedTodo = await encryptTodo(updated);
+
+  // Preserve server_updated_at from original record (sync metadata)
+  if (existingEncrypted.server_updated_at) {
+    encryptedTodo.server_updated_at = existingEncrypted.server_updated_at;
+  }
 
   return db.todos.put(encryptedTodo);
 }
