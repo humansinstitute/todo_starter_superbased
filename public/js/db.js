@@ -1,6 +1,14 @@
 // Dexie database for todos (plaintext for workshop)
 import Dexie from 'https://esm.sh/dexie@4.0.10';
 
+// WORKSHOP MIGRATION: Clear old encrypted data once
+const WORKSHOP_VERSION = 'workshop-v1';
+if (localStorage.getItem('workshop_db_version') !== WORKSHOP_VERSION) {
+  console.log('Workshop: Clearing old database for fresh start');
+  await Dexie.delete('TodoAppV2');
+  localStorage.setItem('workshop_db_version', WORKSHOP_VERSION);
+}
+
 // Use new database name to avoid primary key migration issues
 // Old 'TodoApp' used auto-increment integers which caused sync collisions
 const db = new Dexie('TodoAppV2');
