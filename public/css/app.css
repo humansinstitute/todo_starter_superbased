@@ -884,6 +884,61 @@ summary::-webkit-details-marker {
 }
 
 /* ===========================================
+   Agent Connect Modal
+   =========================================== */
+
+.agent-connect-modal {
+  max-width: 460px;
+  text-align: left;
+}
+.agent-connect-modal h2 {
+  text-align: center;
+}
+.agent-connect-modal > p {
+  text-align: center;
+  margin-bottom: 1rem;
+}
+.agent-connect-content {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 12px;
+  padding: 1rem;
+}
+.agent-config-json {
+  background: #1e1e1e;
+  color: #d4d4d4;
+  padding: 1rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  overflow-x: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.agent-config-json code {
+  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+}
+.copy-button {
+  display: block;
+  width: 100%;
+  padding: 0.6rem 1rem;
+  margin-bottom: 0.75rem;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.copy-button:hover {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+}
+.copy-button.copied {
+  background: #22c55e;
+}
+
+/* ===========================================
    Delegation UI Styles
    =========================================== */
 

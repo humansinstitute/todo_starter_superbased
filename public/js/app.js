@@ -94,6 +94,11 @@ Alpine.store('app', {
   superbasedConnected: false,
   isSavingSuperBased: false,
   isSyncing: false,
+
+  // Agent Connect
+  showAgentConnectModal: false,
+  agentConnectJson: '',
+  agentConfigCopied: false,
   lastSyncTime: null,
   superbasedClient: null,
   syncNotifier: null,
@@ -581,6 +586,45 @@ Alpine.store('app', {
     }
     this.superbasedError = null;
     this.showSuperBasedModal = true;
+  },
+
+  // Agent Connect - show connection config for AI agents
+  async showAgentConnect() {
+    this.showAvatarMenu = false;
+    this.agentConfigCopied = false;
+
+    // Build the config JSON
+    const config = {
+      superbasedURL: this.superbasedClient?.config?.httpUrl || '',
+      userKey: this.session?.pubkey || '',
+      superbasedAppKey: '',
+    };
+
+    // Convert app npub to hex
+    if (this.superbasedClient?.config?.appNpub) {
+      try {
+        const { nip19 } = await loadNostrLibs();
+        const decoded = nip19.decode(this.superbasedClient.config.appNpub);
+        config.superbasedAppKey = decoded.data;
+      } catch (err) {
+        console.error('Failed to decode app npub:', err);
+      }
+    }
+
+    this.agentConnectJson = JSON.stringify(config, null, 2);
+    this.showAgentConnectModal = true;
+  },
+
+  async copyAgentConfig() {
+    try {
+      await navigator.clipboard.writeText(this.agentConnectJson);
+      this.agentConfigCopied = true;
+      setTimeout(() => {
+        this.agentConfigCopied = false;
+      }, 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
   },
 
   // Hardcoded OtherStuff Superbased token for workshop (StarterTodoApp)

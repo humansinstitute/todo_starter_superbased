@@ -64,6 +64,7 @@
           >Show Login QR</button>
           <button type="button" @click="$store.app.openSuperBasedSettings()">SuperBased Sync</button>
           <button type="button" x-show="$store.app.superbasedConnected" @click="$store.app.openDelegationsModal()">Delegations</button>
+          <button type="button" x-show="$store.app.superbasedConnected" @click="$store.app.showAgentConnect()">Agent Connect</button>
           <button type="button" @click="$store.app.logout()">Log out</button>
         </div>
       </div>
@@ -465,6 +466,32 @@
             </button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Agent Connect Modal -->
+    <div
+      class="modal-overlay"
+      x-show="$store.app.showAgentConnectModal"
+      @click.self="$store.app.showAgentConnectModal = false"
+      @keydown.escape.window="$store.app.showAgentConnectModal = false"
+    >
+      <div class="modal agent-connect-modal">
+        <button class="modal-close" type="button" @click="$store.app.showAgentConnectModal = false">&times;</button>
+        <h2>Agent Connect</h2>
+        <p>Connection details for AI agents to interact with your todos.</p>
+        <div class="agent-connect-content">
+          <button
+            class="copy-button"
+            type="button"
+            @click="$store.app.copyAgentConfig()"
+            :class="{ 'copied': $store.app.agentConfigCopied }"
+          >
+            <span x-show="!$store.app.agentConfigCopied">Copy to Clipboard</span>
+            <span x-show="$store.app.agentConfigCopied">Copied!</span>
+          </button>
+          <pre class="agent-config-json"><code x-text="$store.app.agentConnectJson"></code></pre>
+        </div>
       </div>
     </div>
 
