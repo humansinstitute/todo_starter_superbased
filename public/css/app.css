@@ -888,9 +888,7 @@ summary::-webkit-details-marker {
    =========================================== */
 
 .agent-connect-modal {
-  max-width: 520px;
-  max-height: 85vh;
-  overflow-y: auto;
+  max-width: 460px;
   text-align: left;
 }
 .agent-connect-modal h2 {
@@ -938,61 +936,6 @@ summary::-webkit-details-marker {
 }
 .copy-button.copied {
   background: #22c55e;
-}
-
-.agent-connect-content h3,
-.agent-api-docs h3 {
-  font-size: 0.85rem;
-  color: #666;
-  margin: 0 0 0.75rem;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.agent-api-docs {
-  margin-top: 1.5rem;
-  padding-top: 1rem;
-  border-top: 1px solid #e9ecef;
-}
-
-.api-note {
-  font-size: 0.85rem;
-  color: #666;
-  margin-bottom: 1rem;
-}
-
-.api-note code {
-  background: #e9ecef;
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  font-size: 0.8rem;
-}
-
-.api-section {
-  margin-bottom: 1rem;
-}
-
-.api-section h4 {
-  font-size: 0.9rem;
-  color: #333;
-  margin: 0 0 0.5rem;
-  font-weight: 600;
-}
-
-.api-example {
-  background: #1e1e1e;
-  color: #d4d4d4;
-  padding: 0.75rem;
-  border-radius: 6px;
-  font-size: 0.75rem;
-  overflow-x: auto;
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.api-example code {
-  font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
 }
 
 /* ===========================================
